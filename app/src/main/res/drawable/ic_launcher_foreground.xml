@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Top facet of Graphite isometric hex-cube (Vector Blue #65BBE5) -->
+    <path
+        android:fillColor="#FF65BBE5"
+        android:pathData="M54,24 L80,39 L54,54 L28,39 Z" />
+    <!-- Left facet of Graphite isometric hex-cube (Graphic Green #68C587) -->
+    <path
+        android:fillColor="#FF68C587"
+        android:pathData="M28,39 L54,54 L54,84 L28,69 Z" />
+    <!-- Right facet of Graphite isometric hex-cube (Raster Gold #E4BB72) -->
+    <path
+        android:fillColor="#FFE4BB72"
+        android:pathData="M54,54 L80,39 L80,69 L54,84 Z" />
+    <!-- Central node pin and vertices -->
+    <path
+        android:fillColor="#FF181A1F"
+        android:pathData="M54,48 A6,6 0 1,1 54,60 A6,6 0 1,1 54,48 Z" />
+    <path
+        android:fillColor="#FFFBF9EB"
+        android:pathData="M54,50.5 A3.5,3.5 0 1,1 54,57.5 A3.5,3.5 0 1,1 54,50.5 Z" />
+</vector>

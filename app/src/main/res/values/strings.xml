@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Graphite Mobile</string>
+    <string name="tab_canvas">Canvas</string>
+    <string name="tab_nodes">Grafo Nodi</string>
+    <string name="tab_layers">Livelli</string>
+    <string name="tab_portfolio">Progetti</string>
+    <string name="action_undo">Annulla</string>
+    <string name="action_redo">Ripeti</string>
+    <string name="action_export">Esporta</string>
+    <string name="action_add_node">Aggiungi Nodo</string>
+    <string name="action_add_layer">Nuovo Livello</string>
+    <string name="action_new_document">Nuovo Documento</string>
+    <string name="demo_artwork_title">Galleria Demo Ufficiale Graphite</string>
+    <string name="inspector_title">Ispettore Proprietà</string>
+    <string name="node_catalog_title">Catalogo Nodi Procedurali</string>
+    <string name="color_picker_title">Selettore Colore e Sfumature</string>
+    <string name="export_dialog_title">Esporta Documento (SVG / PNG / Graphite)</string>
+</resources>

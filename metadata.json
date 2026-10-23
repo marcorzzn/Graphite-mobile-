@@ -1,0 +1,6 @@
+{
+  "name": "Graphite Mobile",
+  "description": "Versione mobile ottimizzata di Graphite: editor grafico procedurale 2D vettoriale e raster con Node Graph e livelli non distruttivi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
