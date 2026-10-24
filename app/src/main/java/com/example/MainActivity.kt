@@ -227,6 +227,7 @@ fun GraphiteMobileApp() {
                 doc = uiState.document,
                 onDismiss = { viewModel.setExportDialogVisible(false) },
                 onCopiedToast = { msg ->
+                    viewModel.showToast(msg)
                     viewModel.setExportDialogVisible(false)
                 }
             )

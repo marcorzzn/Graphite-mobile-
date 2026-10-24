@@ -6,10 +6,10 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.GraphiteRepository
 import com.example.engine.DemoArtworkFactory
 import com.example.engine.ProceduralEngine
-import com.example.model.BlendModeType
 import com.example.model.GraphiteDocumentModel
 import com.example.model.GraphiteLayer
 import com.example.model.LayerGeometryKind
+import com.example.model.NodeGraphViewMode
 import com.example.model.ProceduralNode
 import com.example.model.ProceduralNodeType
 import com.example.model.ToolType
@@ -23,16 +23,31 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 enum class MobileWorkspaceTab(val labelIt: String) {
     CANVAS("Tela 2D"),
     NODE_GRAPH("Grafo Nodi"),
     LAYERS_INSPECTOR("Livelli"),
     PORTFOLIO("Progetti")
+}
+
+enum class GizmoHandleType {
+    TOP_LEFT,
+    TOP_RIGHT,
+    BOTTOM_RIGHT,
+    BOTTOM_LEFT,
+    TOP_EDGE,
+    RIGHT_EDGE,
+    BOTTOM_EDGE,
+    LEFT_EDGE,
+    ROTATE
 }
 
 data class EditorUiState(
@@ -52,6 +67,11 @@ data class EditorUiState(
     val snapToGrid: Boolean = true,
     val showRulers: Boolean = true,
     val wireframeOverlay: Boolean = false,
+    val showPerformanceHud: Boolean = false,
+    val isPlayingAnimation: Boolean = false,
+    val compareSplitMode: Boolean = false,
+    val compareSplitFraction: Float = 0.5f,
+    val nodeGraphViewMode: NodeGraphViewMode = NodeGraphViewMode.STACK,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     val statusToast: String? = null,
@@ -125,6 +145,10 @@ class GraphiteViewModel(
         }
     }
 
+    fun showToast(message: String) {
+        _uiState.update { it.copy(statusToast = message) }
+    }
+
     fun selectTab(tab: MobileWorkspaceTab) {
         _uiState.update { it.copy(activeTab = tab) }
     }
@@ -156,35 +180,53 @@ class GraphiteViewModel(
         _uiState.update { it.copy(selectedNodeId = nodeId) }
     }
 
-    fun undo() {
-        if (undoStack.isEmpty()) return
+    fun undo(fromGesture: Boolean = false) {
+        if (undoStack.isEmpty()) {
+            if (fromGesture) showToast("Nessuna azione da annullare")
+            return
+        }
         val current = _uiState.value.document
+        val currentSelectedId = _uiState.value.selectedLayerId
         val prev = undoStack.removeLast()
         redoStack.addLast(current)
+        val restoredLayerId = if (prev.layers.any { it.id == currentSelectedId }) {
+            currentSelectedId
+        } else {
+            prev.layers.lastOrNull()?.id
+        }
         _uiState.update {
             it.copy(
                 document = prev,
-                selectedLayerId = prev.layers.lastOrNull()?.id,
+                selectedLayerId = restoredLayerId,
                 canUndo = undoStack.isNotEmpty(),
                 canRedo = redoStack.isNotEmpty(),
-                statusToast = "Annullato (${undoStack.size} passi rimanenti)"
+                statusToast = if (fromGesture) "Annullato (Tap a 2 dita)" else "Annullato (${undoStack.size} passi rimanenti)"
             )
         }
         viewModelScope.launch { repository.saveDocument(prev) }
     }
 
-    fun redo() {
-        if (redoStack.isEmpty()) return
+    fun redo(fromGesture: Boolean = false) {
+        if (redoStack.isEmpty()) {
+            if (fromGesture) showToast("Nessuna azione da ripetere")
+            return
+        }
         val current = _uiState.value.document
+        val currentSelectedId = _uiState.value.selectedLayerId
         val next = redoStack.removeLast()
         undoStack.addLast(current)
+        val restoredLayerId = if (next.layers.any { it.id == currentSelectedId }) {
+            currentSelectedId
+        } else {
+            next.layers.lastOrNull()?.id
+        }
         _uiState.update {
             it.copy(
                 document = next,
-                selectedLayerId = next.layers.lastOrNull()?.id,
+                selectedLayerId = restoredLayerId,
                 canUndo = undoStack.isNotEmpty(),
                 canRedo = redoStack.isNotEmpty(),
-                statusToast = "Ripristinato"
+                statusToast = if (fromGesture) "Ripetuto (Tap a 3 dita)" else "Ripristinato"
             )
         }
         viewModelScope.launch { repository.saveDocument(next) }
@@ -271,7 +313,7 @@ class GraphiteViewModel(
     fun toggleSnap() {
         _uiState.update {
             val next = !it.snapToGrid
-            it.copy(snapToGrid = next, statusToast = if (next) " Calamita Griglia Attiva" else "Calamita Disattivata")
+            it.copy(snapToGrid = next, statusToast = if (next) "Calamita Griglia Attiva (20px / 15°)" else "Calamita Disattivata")
         }
     }
 
@@ -283,6 +325,55 @@ class GraphiteViewModel(
         _uiState.update {
             val next = !it.wireframeOverlay
             it.copy(wireframeOverlay = next, statusToast = if (next) "Modalità Contorno Vettoriale (Wireframe)" else "Modalità Render Completo")
+        }
+    }
+
+    fun togglePerformanceHud() {
+        _uiState.update {
+            val next = !it.showPerformanceHud
+            it.copy(
+                showPerformanceHud = next,
+                statusToast = if (next) "Telemetria Motore Graphene Attiva" else "Telemetria Nascosta"
+            )
+        }
+    }
+
+    fun togglePlayAnimation() {
+        _uiState.update {
+            val next = !it.isPlayingAnimation
+            it.copy(
+                isPlayingAnimation = next,
+                statusToast = if (next) "Animazione Procedurale Live (60fps) Avviata" else "Animazione in Pausa"
+            )
+        }
+    }
+
+    fun toggleCompareSplitMode() {
+        _uiState.update {
+            val next = !it.compareSplitMode
+            it.copy(
+                compareSplitMode = next,
+                statusToast = if (next) "Confronto Prima/Dopo Attivo — trascina la tendina centrale" else "Confronto Prima/Dopo Chiuso"
+            )
+        }
+    }
+
+    fun updateCompareSplitFraction(fraction: Float) {
+        _uiState.update {
+            it.copy(compareSplitFraction = fraction.coerceIn(0.08f, 0.92f))
+        }
+    }
+
+    fun setNodeGraphViewMode(mode: NodeGraphViewMode) {
+        _uiState.update {
+            it.copy(
+                nodeGraphViewMode = mode,
+                statusToast = if (mode == NodeGraphViewMode.CANVAS_2D) {
+                    "Lavagna 2D DAG Attiva — trascina i nodi liberamente nello spazio"
+                } else {
+                    "Vista Stack Mobile Attiva"
+                }
+            )
         }
     }
 
@@ -348,8 +439,19 @@ class GraphiteViewModel(
                 val targetKind = if (state.activeTool == ToolType.SPLINE) LayerGeometryKind.SPLINE else LayerGeometryKind.BEZIER_PATH
                 val currentLayer = state.selectedLayer
                 if (currentLayer != null && currentLayer.kind == targetKind && !currentLayer.locked) {
-                    val updatedPts = currentLayer.points + Vec2Point(sx, sy)
-                    updateLayer(currentLayer.id, toast = "Punto aggiunto (${updatedPts.size} vertici)") {
+                    val lastPt = currentLayer.points.lastOrNull()
+                    val tDx = if (lastPt != null) ((sx - lastPt.x) * 0.32f).coerceIn(-65f, 65f) else 42f
+                    val tDy = if (lastPt != null) ((sy - lastPt.y) * 0.32f).coerceIn(-65f, 65f) else -28f
+                    val newPt = Vec2Point(
+                        x = sx,
+                        y = sy,
+                        handleInX = sx - tDx,
+                        handleInY = sy - tDy,
+                        handleOutX = sx + tDx,
+                        handleOutY = sy + tDy
+                    )
+                    val updatedPts = currentLayer.points + newPt
+                    updateLayer(currentLayer.id, toast = "Vertice Bézier aggiunto (${updatedPts.size} nodi — trascina le maniglie tangenti)") {
                         it.copy(points = updatedPts)
                     }
                 } else {
@@ -366,15 +468,36 @@ class GraphiteViewModel(
                         strokeColorHex = state.primaryColorHex,
                         strokeWidth = max(4f, state.defaultStrokeWidth),
                         points = listOf(
-                            Vec2Point(sx - 60f, sy),
-                            Vec2Point(sx, sy - 60f),
-                            Vec2Point(sx + 60f, sy)
+                            Vec2Point(
+                                x = sx - 80f,
+                                y = sy + 20f,
+                                handleInX = sx - 120f,
+                                handleInY = sy + 60f,
+                                handleOutX = sx - 40f,
+                                handleOutY = sy - 35f
+                            ),
+                            Vec2Point(
+                                x = sx,
+                                y = sy - 70f,
+                                handleInX = sx - 45f,
+                                handleInY = sy - 70f,
+                                handleOutX = sx + 45f,
+                                handleOutY = sy - 70f
+                            ),
+                            Vec2Point(
+                                x = sx + 80f,
+                                y = sy + 20f,
+                                handleInX = sx + 40f,
+                                handleInY = sy - 35f,
+                                handleOutX = sx + 120f,
+                                handleOutY = sy + 60f
+                            )
                         )
                     )
                     commitDocumentChange(
                         doc.copy(layers = doc.layers + newLayer),
                         newSelectedLayerId = newId,
-                        toast = "Nuovo tracciato creato — tocca per aggiungere altri vertici"
+                        toast = "Curva Bézier creata — trascina i vertici o le antenne tangenti"
                     )
                 }
             }
@@ -401,7 +524,6 @@ class GraphiteViewModel(
                 _uiState.update { it.copy(activeTool = ToolType.SELECT) }
             }
             else -> {
-                // Quick tap with a shape tool creates a default-sized procedural shape at tap point
                 if (state.activeTool in listOf(ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.POLYGON, ToolType.STAR, ToolType.LINE)) {
                     createShapeFromDrag(sx - 110f, sy - 90f, sx + 110f, sy + 90f)
                 }
@@ -414,8 +536,17 @@ class GraphiteViewModel(
         if (selected.locked) return
         val newX = if (isFinished) snapCoord(selected.x + dx) else selected.x + dx
         val newY = if (isFinished) snapCoord(selected.y + dy) else selected.y + dy
+        val shiftX = newX - selected.x
+        val shiftY = newY - selected.y
         val movedPoints = selected.points.map { pt ->
-            pt.copy(x = pt.x + (newX - selected.x), y = pt.y + (newY - selected.y))
+            pt.copy(
+                x = pt.x + shiftX,
+                y = pt.y + shiftY,
+                handleInX = pt.handleInX + shiftX,
+                handleInY = pt.handleInY + shiftY,
+                handleOutX = pt.handleOutX + shiftX,
+                handleOutY = pt.handleOutY + shiftY
+            )
         }
         val updatedDoc = _uiState.value.document.copy(
             layers = _uiState.value.document.layers.map { l ->
@@ -425,19 +556,203 @@ class GraphiteViewModel(
         commitDocumentChange(updatedDoc, recordHistory = isFinished)
     }
 
+    /**
+     * Direct on-canvas transformation via the 8 resize handles + top rotation stem knob.
+     */
+    fun transformSelectedLayerViaGizmo(
+        handle: GizmoHandleType,
+        artboardX: Float,
+        artboardY: Float,
+        deltaX: Float,
+        deltaY: Float,
+        isFinished: Boolean
+    ) {
+        val selected = _uiState.value.selectedLayer ?: return
+        if (selected.locked) return
+
+        if (handle == GizmoHandleType.ROTATE) {
+            val rawAngleDeg = Math.toDegrees(atan2((artboardY - selected.y).toDouble(), (artboardX - selected.x).toDouble())).toFloat() + 90f
+            val normalizedDeg = ((rawAngleDeg + 180f) % 360f + 360f) % 360f - 180f
+            val finalAngle = if (_uiState.value.snapToGrid) {
+                (normalizedDeg / 15f).roundToInt() * 15f
+            } else {
+                normalizedDeg
+            }
+            val updatedDoc = _uiState.value.document.copy(
+                layers = _uiState.value.document.layers.map { l ->
+                    if (l.id == selected.id) l.copy(rotation = finalAngle) else l
+                }
+            )
+            commitDocumentChange(
+                newDoc = updatedDoc,
+                recordHistory = isFinished,
+                toast = if (isFinished) "Rotazione: ${finalAngle.roundToInt()}°" else null
+            )
+            return
+        }
+
+        // Project world delta (deltaX, deltaY) onto the layer's local Oriented Bounding Box (OBB) axes
+        val rotRad = Math.toRadians(-selected.rotation.toDouble())
+        val cosR = cos(rotRad).toFloat()
+        val sinR = sin(rotRad).toFloat()
+        val localDx = deltaX * cosR - deltaY * sinR
+        val localDy = deltaX * sinR + deltaY * cosR
+
+        var left = selected.x - selected.width / 2f
+        var right = selected.x + selected.width / 2f
+        var top = selected.y - selected.height / 2f
+        var bottom = selected.y + selected.height / 2f
+
+        when (handle) {
+            GizmoHandleType.TOP_LEFT -> {
+                left = min(right - 28f, left + localDx)
+                top = min(bottom - 28f, top + localDy)
+            }
+            GizmoHandleType.TOP_RIGHT -> {
+                right = max(left + 28f, right + localDx)
+                top = min(bottom - 28f, top + localDy)
+            }
+            GizmoHandleType.BOTTOM_RIGHT -> {
+                right = max(left + 28f, right + localDx)
+                bottom = max(top + 28f, bottom + localDy)
+            }
+            GizmoHandleType.BOTTOM_LEFT -> {
+                left = min(right - 28f, left + localDx)
+                bottom = max(top + 28f, bottom + localDy)
+            }
+            GizmoHandleType.TOP_EDGE -> {
+                top = min(bottom - 28f, top + localDy)
+            }
+            GizmoHandleType.BOTTOM_EDGE -> {
+                bottom = max(top + 28f, bottom + localDy)
+            }
+            GizmoHandleType.LEFT_EDGE -> {
+                left = min(right - 28f, left + localDx)
+            }
+            GizmoHandleType.RIGHT_EDGE -> {
+                right = max(left + 28f, right + localDx)
+            }
+            GizmoHandleType.ROTATE -> {}
+        }
+
+        val newW = if (isFinished) max(28f, snapCoord(right - left)) else max(28f, right - left)
+        val newH = if (isFinished) max(28f, snapCoord(bottom - top)) else max(28f, bottom - top)
+        val localCenterShiftX = (left + right) / 2f - selected.x
+        val localCenterShiftY = (top + bottom) / 2f - selected.y
+        val fwdRad = Math.toRadians(selected.rotation.toDouble())
+        val cosF = cos(fwdRad).toFloat()
+        val sinF = sin(fwdRad).toFloat()
+        val newCx = selected.x + localCenterShiftX * cosF - localCenterShiftY * sinF
+        val newCy = selected.y + localCenterShiftX * sinF + localCenterShiftY * cosF
+
+        val sx = newW / max(1f, selected.width)
+        val sy = newH / max(1f, selected.height)
+        val scaledPoints = selected.points.map { pt ->
+            val rx = (pt.x - selected.x) * sx + newCx
+            val ry = (pt.y - selected.y) * sy + newCy
+            val rInX = (pt.handleInX - selected.x) * sx + newCx
+            val rInY = (pt.handleInY - selected.y) * sy + newCy
+            val rOutX = (pt.handleOutX - selected.x) * sx + newCx
+            val rOutY = (pt.handleOutY - selected.y) * sy + newCy
+            pt.copy(
+                x = rx,
+                y = ry,
+                handleInX = rInX,
+                handleInY = rInY,
+                handleOutX = rOutX,
+                handleOutY = rOutY
+            )
+        }
+
+        val updatedDoc = _uiState.value.document.copy(
+            layers = _uiState.value.document.layers.map { l ->
+                if (l.id == selected.id) {
+                    l.copy(
+                        x = newCx,
+                        y = newCy,
+                        width = newW,
+                        height = newH,
+                        points = scaledPoints
+                    )
+                } else l
+            }
+        )
+        commitDocumentChange(
+            newDoc = updatedDoc,
+            recordHistory = isFinished,
+            toast = if (isFinished) "Dimensioni: ${newW.roundToInt()}×${newH.roundToInt()} px" else null
+        )
+    }
+
     fun movePathVertex(pointIndex: Int, newX: Float, newY: Float, isFinished: Boolean) {
         val selected = _uiState.value.selectedLayer ?: return
         if (selected.locked || pointIndex !in selected.points.indices) return
         val sx = if (isFinished) snapCoord(newX) else newX
         val sy = if (isFinished) snapCoord(newY) else newY
         val newPts = selected.points.toMutableList()
-        newPts[pointIndex] = newPts[pointIndex].copy(x = sx, y = sy)
+        val oldPt = newPts[pointIndex]
+        val dx = sx - oldPt.x
+        val dy = sy - oldPt.y
+        newPts[pointIndex] = oldPt.copy(
+            x = sx,
+            y = sy,
+            handleInX = oldPt.handleInX + dx,
+            handleInY = oldPt.handleInY + dy,
+            handleOutX = oldPt.handleOutX + dx,
+            handleOutY = oldPt.handleOutY + dy
+        )
         val updatedDoc = _uiState.value.document.copy(
             layers = _uiState.value.document.layers.map { l ->
                 if (l.id == selected.id) l.copy(points = newPts) else l
             }
         )
         commitDocumentChange(updatedDoc, recordHistory = isFinished)
+    }
+
+    /**
+     * Moves a Cubic Bézier tangent control handle (handleIn or handleOut) with C1 symmetric opposite reflection.
+     */
+    fun moveBezierHandle(
+        pointIndex: Int,
+        isHandleIn: Boolean,
+        newX: Float,
+        newY: Float,
+        isFinished: Boolean
+    ) {
+        val selected = _uiState.value.selectedLayer ?: return
+        if (selected.locked || pointIndex !in selected.points.indices) return
+        val newPts = selected.points.toMutableList()
+        val anchor = newPts[pointIndex]
+        val updatedPt = if (isHandleIn) {
+            val dx = newX - anchor.x
+            val dy = newY - anchor.y
+            anchor.copy(
+                handleInX = newX,
+                handleInY = newY,
+                handleOutX = anchor.x - dx,
+                handleOutY = anchor.y - dy
+            )
+        } else {
+            val dx = newX - anchor.x
+            val dy = newY - anchor.y
+            anchor.copy(
+                handleOutX = newX,
+                handleOutY = newY,
+                handleInX = anchor.x - dx,
+                handleInY = anchor.y - dy
+            )
+        }
+        newPts[pointIndex] = updatedPt
+        val updatedDoc = _uiState.value.document.copy(
+            layers = _uiState.value.document.layers.map { l ->
+                if (l.id == selected.id) l.copy(points = newPts) else l
+            }
+        )
+        commitDocumentChange(
+            newDoc = updatedDoc,
+            recordHistory = isFinished,
+            toast = if (isFinished) "Tangente Bézier regolata" else null
+        )
     }
 
     fun createShapeFromDrag(startX: Float, startY: Float, endX: Float, endY: Float) {
@@ -492,6 +807,7 @@ class GraphiteViewModel(
         val maxX = points.maxOf { it.x }
         val minY = points.minOf { it.y }
         val maxY = points.maxOf { it.y }
+        val avgPressure = points.map { it.pressure }.average().toFloat().coerceIn(0.25f, 1.8f)
         val newId = "stroke-${UUID.randomUUID().toString().take(6)}"
         val newLayer = GraphiteLayer(
             id = newId,
@@ -503,13 +819,13 @@ class GraphiteViewModel(
             height = max(32f, maxY - minY),
             hasFill = false,
             strokeColorHex = state.primaryColorHex,
-            strokeWidth = if (isBrush) max(14f, state.defaultStrokeWidth * 3f) else max(4f, state.defaultStrokeWidth),
+            strokeWidth = if (isBrush) max(10f, state.defaultStrokeWidth * 3.2f * avgPressure) else max(3f, state.defaultStrokeWidth * avgPressure),
             points = points
         )
         commitDocumentChange(
             doc.copy(layers = doc.layers + newLayer),
             newSelectedLayerId = newId,
-            toast = "${newLayer.name} aggiunto"
+            toast = "${newLayer.name} aggiunto (pressione media ${(avgPressure * 100).roundToInt()}%)"
         )
     }
 
@@ -518,10 +834,31 @@ class GraphiteViewModel(
             if (!layer.visible || layer.locked) continue
             val evaluated = ProceduralEngine.evaluateLayer(layer)
             for (inst in evaluated) {
+                // Inverse-rotate tap point (x, y) around (inst.centerX, inst.centerY) by -inst.rotationDeg
+                val rad = Math.toRadians(-inst.rotationDeg.toDouble())
+                val cosR = cos(rad).toFloat()
+                val sinR = sin(rad).toFloat()
+                val relX = x - inst.centerX
+                val relY = y - inst.centerY
+                val localX = inst.centerX + relX * cosR - relY * sinR
+                val localY = inst.centerY + relX * sinR + relY * cosR
+
+                // If Boolean Difference (0) or XOR (3) is active, exclude taps inside the subtracted cutter hole
+                val boolOp = inst.booleanOp
+                if (boolOp != null && boolOp.opMode in listOf(0, 3)) {
+                    val cutCx = inst.centerX + boolOp.offsetX
+                    val cutCy = inst.centerY + boolOp.offsetY
+                    val cutHalfW = (inst.width * boolOp.scaleRatio) * 0.45f
+                    val cutHalfH = (inst.height * boolOp.scaleRatio) * 0.45f
+                    if (abs(localX - cutCx) < cutHalfW && abs(localY - cutCy) < cutHalfH) {
+                        continue
+                    }
+                }
+
                 val halfW = max(28f, inst.width / 2f + inst.strokeWidth)
                 val halfH = max(28f, inst.height / 2f + inst.strokeWidth)
-                if (x in (inst.centerX - halfW)..(inst.centerX + halfW) &&
-                    y in (inst.centerY - halfH)..(inst.centerY + halfH)
+                if (localX in (inst.centerX - halfW)..(inst.centerX + halfW) &&
+                    localY in (inst.centerY - halfH)..(inst.centerY + halfH)
                 ) {
                     return layer
                 }
@@ -565,9 +902,30 @@ class GraphiteViewModel(
             strokeWidth = 4f,
             points = if (kind in listOf(LayerGeometryKind.BEZIER_PATH, LayerGeometryKind.SPLINE, LayerGeometryKind.LINE)) {
                 listOf(
-                    Vec2Point(cx - 120f, cy + 40f),
-                    Vec2Point(cx, cy - 80f),
-                    Vec2Point(cx + 120f, cy + 40f)
+                    Vec2Point(
+                        x = cx - 120f,
+                        y = cy + 40f,
+                        handleInX = cx - 160f,
+                        handleInY = cy + 80f,
+                        handleOutX = cx - 80f,
+                        handleOutY = cy - 20f
+                    ),
+                    Vec2Point(
+                        x = cx,
+                        y = cy - 80f,
+                        handleInX = cx - 55f,
+                        handleInY = cy - 80f,
+                        handleOutX = cx + 55f,
+                        handleOutY = cy - 80f
+                    ),
+                    Vec2Point(
+                        x = cx + 120f,
+                        y = cy + 40f,
+                        handleInX = cx + 80f,
+                        handleInY = cy - 20f,
+                        handleOutX = cx + 160f,
+                        handleOutY = cy + 80f
+                    )
                 )
             } else emptyList()
         )
@@ -614,7 +972,6 @@ class GraphiteViewModel(
         val doc = _uiState.value.document
         val idx = doc.layers.indexOfFirst { it.id == layerId }
         if (idx == -1) return
-        // Note: last in list is rendered on top
         val targetIdx = if (moveUpInVisualStack) idx + 1 else idx - 1
         if (targetIdx !in doc.layers.indices) return
         val mutable = doc.layers.toMutableList()
@@ -687,6 +1044,45 @@ class GraphiteViewModel(
         }
     }
 
+    fun moveNodeIn2DGraph(
+        layerId: String,
+        nodeId: String,
+        newX: Float,
+        newY: Float,
+        isFinished: Boolean = false
+    ) {
+        var rewired = false
+        updateLayer(layerId, recordHistory = isFinished) { layer ->
+            val updatedNodes = layer.nodes.mapIndexed { idx, n ->
+                val defaultX = 240f + idx * 235f
+                val defaultY = 70f + (idx % 2) * 125f
+                if (n.id == nodeId) {
+                    n.copy(
+                        graphX = newX.coerceIn(20f, 1800f),
+                        graphY = newY.coerceIn(20f, 1200f)
+                    )
+                } else {
+                    n.copy(
+                        graphX = if (n.graphX > 1f) n.graphX else defaultX,
+                        graphY = if (n.graphY > 1f) n.graphY else defaultY
+                    )
+                }
+            }
+            if (isFinished && updatedNodes.size >= 2) {
+                val sortedBySpatialX = updatedNodes.sortedBy { it.graphX }
+                if (sortedBySpatialX.map { it.id } != updatedNodes.map { it.id }) {
+                    rewired = true
+                }
+                layer.copy(nodes = sortedBySpatialX)
+            } else {
+                layer.copy(nodes = updatedNodes)
+            }
+        }
+        if (rewired) {
+            showToast("Flusso 2D DAG ricablato: ordine esecuzione aggiornato da sinistra a destra")
+        }
+    }
+
     fun applyProceduralPresetRecipe(recipeName: String) {
         val layer = _uiState.value.selectedLayer ?: return
         val presetNodes = when (recipeName) {
@@ -694,46 +1090,131 @@ class GraphiteViewModel(
                 ProceduralNode(
                     id = "node-${UUID.randomUUID().toString().take(5)}",
                     type = ProceduralNodeType.RADIAL_REPEAT,
-                    params = mapOf("count" to 12f, "radius" to 150f, "arcDeg" to 360f, "spinCopies" to 1f)
+                    params = mapOf("count" to 12f, "radius" to 150f, "arcDeg" to 360f, "spinCopies" to 1f),
+                    graphX = 280f,
+                    graphY = 140f
                 ),
                 ProceduralNode(
                     id = "node-${UUID.randomUUID().toString().take(5)}",
                     type = ProceduralNodeType.OFFSET_PATH,
-                    params = mapOf("offset" to 8f, "roundness" to 16f)
+                    params = mapOf("offset" to 8f, "roundness" to 16f),
+                    graphX = 540f,
+                    graphY = 220f
                 ),
                 ProceduralNode(
                     id = "node-${UUID.randomUUID().toString().take(5)}",
                     type = ProceduralNodeType.DROP_SHADOW,
-                    params = mapOf("offsetX" to 0f, "offsetY" to 10f, "spread" to 20f, "alpha" to 0.6f)
+                    params = mapOf("offsetX" to 0f, "offsetY" to 10f, "spread" to 20f, "alpha" to 0.6f),
+                    graphX = 800f,
+                    graphY = 160f
+                )
+            )
+            "boolean_gear" -> listOf(
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.BOOLEAN_OP,
+                    params = mapOf("opMode" to 0f, "cutterShape" to 0f, "offsetX" to 45f, "offsetY" to 0f, "scaleRatio" to 0.62f),
+                    graphX = 280f,
+                    graphY = 120f
+                ),
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.RADIAL_REPEAT,
+                    params = mapOf("count" to 8f, "radius" to 120f, "arcDeg" to 360f, "spinCopies" to 1f),
+                    graphX = 540f,
+                    graphY = 220f
+                ),
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.DROP_SHADOW,
+                    params = mapOf("offsetX" to 6f, "offsetY" to 10f, "spread" to 16f, "alpha" to 0.55f),
+                    graphX = 800f,
+                    graphY = 140f
                 )
             )
             "isometric_grid" -> listOf(
                 ProceduralNode(
                     id = "node-${UUID.randomUUID().toString().take(5)}",
                     type = ProceduralNodeType.GRID_ARRAY,
-                    params = mapOf("columns" to 4f, "rows" to 3f, "spacingX" to 140f, "spacingY" to 110f, "scaleStep" to 0.95f)
+                    params = mapOf("columns" to 4f, "rows" to 3f, "spacingX" to 140f, "spacingY" to 110f, "scaleStep" to 0.95f),
+                    graphX = 300f,
+                    graphY = 150f
                 ),
                 ProceduralNode(
                     id = "node-${UUID.randomUUID().toString().take(5)}",
                     type = ProceduralNodeType.COLOR_ADJUST,
-                    params = mapOf("hueShift" to 28f, "saturation" to 1.2f, "lightness" to 0.05f)
+                    params = mapOf("hueShift" to 28f, "saturation" to 1.2f, "lightness" to 0.05f),
+                    graphX = 580f,
+                    graphY = 210f
+                )
+            )
+            "stress_benchmark" -> listOf(
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.RADIAL_REPEAT,
+                    params = mapOf("count" to 12f, "radius" to 140f, "arcDeg" to 360f, "spinCopies" to 1f),
+                    graphX = 260f,
+                    graphY = 110f
+                ),
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.MIRROR_SYMMETRY,
+                    params = mapOf("axisMode" to 2f, "gap" to 160f),
+                    graphX = 500f,
+                    graphY = 230f
+                ),
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.JITTER_WAVE,
+                    params = mapOf("amplitude" to 14f, "frequency" to 6f, "phase" to 30f),
+                    graphX = 740f,
+                    graphY = 120f
+                ),
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.DROP_SHADOW,
+                    params = mapOf("offsetX" to 6f, "offsetY" to 10f, "spread" to 14f, "alpha" to 0.5f),
+                    graphX = 980f,
+                    graphY = 220f
                 )
             )
             else -> listOf(
                 ProceduralNode(
                     id = "node-${UUID.randomUUID().toString().take(5)}",
                     type = ProceduralNodeType.JITTER_WAVE,
-                    params = mapOf("amplitude" to 22f, "frequency" to 6f, "phase" to 45f)
+                    params = mapOf("amplitude" to 22f, "frequency" to 6f, "phase" to 45f),
+                    graphX = 300f,
+                    graphY = 140f
                 ),
                 ProceduralNode(
                     id = "node-${UUID.randomUUID().toString().take(5)}",
                     type = ProceduralNodeType.MIRROR_SYMMETRY,
-                    params = mapOf("axisMode" to 0f, "gap" to 90f)
+                    params = mapOf("axisMode" to 0f, "gap" to 90f),
+                    graphX = 580f,
+                    graphY = 220f
                 )
             )
         }
-        updateLayer(layer.id, toast = "Catena procedurale applicata a ${layer.name}") {
-            it.copy(nodes = presetNodes)
+        updateLayer(layer.id, toast = "Catena procedurale applicata a ${layer.name}") { l ->
+            val targetKind = if (recipeName == "boolean_gear" && l.kind !in listOf(
+                    LayerGeometryKind.RECTANGLE,
+                    LayerGeometryKind.ELLIPSE,
+                    LayerGeometryKind.POLYGON,
+                    LayerGeometryKind.STAR
+                )
+            ) {
+                LayerGeometryKind.POLYGON
+            } else {
+                l.kind
+            }
+            l.copy(
+                kind = targetKind,
+                hasFill = if (recipeName == "boolean_gear") true else l.hasFill,
+                nodes = presetNodes
+            )
+        }
+        if (recipeName == "stress_benchmark") {
+            _uiState.update { it.copy(showPerformanceHud = true) }
         }
     }
 
@@ -768,6 +1249,29 @@ class GraphiteViewModel(
                 canRedo = false,
                 statusToast = "Documento '${doc.name}' caricato"
             )
+        }
+    }
+
+    fun importGraphiteJsonDocument(jsonContent: String) {
+        val parsed = ProceduralEngine.fromGraphiteJson(jsonContent)
+        if (parsed == null) {
+            showToast("File .graphite non valido o corrotto")
+            return
+        }
+        val importedDoc = parsed.copy(
+            id = "imp-${UUID.randomUUID().toString().take(7)}",
+            updatedAt = System.currentTimeMillis()
+        )
+        undoStack.clear()
+        redoStack.clear()
+        commitDocumentChange(
+            newDoc = importedDoc,
+            recordHistory = false,
+            newSelectedLayerId = importedDoc.layers.lastOrNull()?.id,
+            toast = "File '${importedDoc.name}' importato con successo!"
+        )
+        _uiState.update {
+            it.copy(activeTab = MobileWorkspaceTab.CANVAS, zoom = 1f, panX = 0f, panY = 0f)
         }
     }
 

@@ -6,6 +6,7 @@ import android.graphics.DashPathEffect
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PathMeasure
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
@@ -19,6 +20,8 @@ import com.example.model.ProceduralNodeType
 import com.example.model.Vec2Point
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Collections
+import java.util.LinkedHashMap
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
@@ -34,6 +37,14 @@ data class EvaluatedShadow(
     val spread: Float,
     val alpha: Float,
     val colorHex: Long
+)
+
+data class EvaluatedBooleanOp(
+    val opMode: Int,
+    val cutterShape: Int,
+    val offsetX: Float,
+    val offsetY: Float,
+    val scaleRatio: Float
 )
 
 data class EvaluatedShapeInstance(
@@ -66,13 +77,63 @@ data class EvaluatedShapeInstance(
     val dashLen: Float = 0f,
     val dashGap: Float = 0f,
     val dashPhase: Float = 0f,
-    val shadow: EvaluatedShadow? = null
+    val shadow: EvaluatedShadow? = null,
+    val booleanOp: EvaluatedBooleanOp? = null
 )
 
 object ProceduralEngine {
 
-    fun evaluateLayer(layer: GraphiteLayer): List<EvaluatedShapeInstance> {
+    private data class EvalCacheKey(
+        val layer: GraphiteLayer,
+        val bypassNodes: Boolean,
+        val quantizedTime: Int
+    )
+
+    private val evalCache: MutableMap<EvalCacheKey, List<EvaluatedShapeInstance>> =
+        Collections.synchronizedMap(
+            object : LinkedHashMap<EvalCacheKey, List<EvaluatedShapeInstance>>(64, 0.75f, true) {
+                override fun removeEldestEntry(
+                    eldest: MutableMap.MutableEntry<EvalCacheKey, List<EvaluatedShapeInstance>>?
+                ): Boolean = size > 64
+            }
+        )
+
+    private fun Vec2Point.transformPoint(
+        originX: Float,
+        originY: Float,
+        sx: Float = 1f,
+        sy: Float = 1f,
+        dx: Float = 0f,
+        dy: Float = 0f
+    ): Vec2Point {
+        return copy(
+            x = (x - originX) * sx + originX + dx,
+            y = (y - originY) * sy + originY + dy,
+            handleInX = (handleInX - originX) * sx + originX + dx,
+            handleInY = (handleInY - originY) * sy + originY + dy,
+            handleOutX = (handleOutX - originX) * sx + originX + dx,
+            handleOutY = (handleOutY - originY) * sy + originY + dy
+        )
+    }
+
+    fun evaluateLayer(
+        layer: GraphiteLayer,
+        timeSec: Float = 0f,
+        bypassNodes: Boolean = false
+    ): List<EvaluatedShapeInstance> {
         if (!layer.visible) return emptyList()
+
+        val hasAnimatedNode = !bypassNodes && timeSec > 0f && layer.nodes.any {
+            it.enabled && it.type in listOf(
+                ProceduralNodeType.JITTER_WAVE,
+                ProceduralNodeType.RADIAL_REPEAT,
+                ProceduralNodeType.STROKE_DASH,
+                ProceduralNodeType.BOOLEAN_OP
+            )
+        }
+        val qTime = if (hasAnimatedNode) (timeSec * 60f).toInt() else 0
+        val cacheKey = EvalCacheKey(layer, bypassNodes, qTime)
+        evalCache.get(cacheKey)?.let { return it }
 
         var instances = listOf(
             EvaluatedShapeInstance(
@@ -102,17 +163,24 @@ object ProceduralEngine {
             )
         )
 
-        for (node in layer.nodes) {
-            if (!node.enabled) continue
-            instances = applyNode(node, instances)
+        if (bypassNodes) {
+            evalCache.put(cacheKey, instances)
+            return instances
         }
 
+        for (node in layer.nodes) {
+            if (!node.enabled) continue
+            instances = applyNode(node, instances, timeSec)
+        }
+
+        evalCache.put(cacheKey, instances)
         return instances
     }
 
     private fun applyNode(
         node: ProceduralNode,
-        input: List<EvaluatedShapeInstance>
+        input: List<EvaluatedShapeInstance>,
+        timeSec: Float = 0f
     ): List<EvaluatedShapeInstance> {
         val p = node.params
         return when (node.type) {
@@ -130,9 +198,7 @@ object ProceduralEngine {
                         height = inst.height * sy,
                         rotationDeg = inst.rotationDeg + rot,
                         points = inst.points.map { pt ->
-                            val relX = (pt.x - inst.centerX) * sx + inst.centerX + dx
-                            val relY = (pt.y - inst.centerY) * sy + inst.centerY + dy
-                            pt.copy(x = relX, y = relY)
+                            pt.transformPoint(inst.centerX, inst.centerY, sx, sy, dx, dy)
                         }
                     )
                 }
@@ -154,12 +220,33 @@ object ProceduralEngine {
             ProceduralNodeType.JITTER_WAVE -> {
                 val amp = p["amplitude"] ?: 15f
                 val freq = p["frequency"] ?: 4f
-                val phase = p["phase"] ?: 0f
+                val phase = (p["phase"] ?: 0f) + timeSec * 140f
                 input.map { inst ->
                     inst.copy(
                         waveAmplitude = amp,
                         waveFrequency = freq,
                         wavePhaseDeg = phase
+                    )
+                }
+            }
+
+            ProceduralNodeType.BOOLEAN_OP -> {
+                val opMode = (p["opMode"] ?: 0f).toInt().coerceIn(0, 3)
+                val cutterShape = (p["cutterShape"] ?: 0f).toInt().coerceIn(0, 2)
+                val animOx = if (timeSec > 0f) (sin(timeSec * 2.2) * 28.0).toFloat() else 0f
+                val animOy = if (timeSec > 0f) (cos(timeSec * 1.6) * 22.0).toFloat() else 0f
+                val ox = (p["offsetX"] ?: 40f) + animOx
+                val oy = (p["offsetY"] ?: 0f) + animOy
+                val scaleRatio = (p["scaleRatio"] ?: 0.65f).coerceIn(0.2f, 1.5f)
+                input.map { inst ->
+                    inst.copy(
+                        booleanOp = EvaluatedBooleanOp(
+                            opMode = opMode,
+                            cutterShape = cutterShape,
+                            offsetX = ox,
+                            offsetY = oy,
+                            scaleRatio = scaleRatio
+                        )
                     )
                 }
             }
@@ -174,14 +261,14 @@ object ProceduralEngine {
                             result.add(
                                 inst.copy(
                                     centerX = inst.centerX - gap,
-                                    points = inst.points.map { it.copy(x = inst.centerX - gap - (it.x - inst.centerX)) }
+                                    points = inst.points.map { it.transformPoint(inst.centerX, inst.centerY, sx = -1f, sy = 1f, dx = -gap, dy = 0f) }
                                 )
                             )
                             result.add(
                                 inst.copy(
                                     centerX = inst.centerX + gap,
                                     rotationDeg = -inst.rotationDeg,
-                                    points = inst.points.map { it.copy(x = inst.centerX + gap + (it.x - inst.centerX)) }
+                                    points = inst.points.map { it.transformPoint(inst.centerX, inst.centerY, sx = 1f, sy = 1f, dx = gap, dy = 0f) }
                                 )
                             )
                         }
@@ -189,14 +276,14 @@ object ProceduralEngine {
                             result.add(
                                 inst.copy(
                                     centerY = inst.centerY - gap,
-                                    points = inst.points.map { it.copy(y = inst.centerY - gap + (it.y - inst.centerY)) }
+                                    points = inst.points.map { it.transformPoint(inst.centerX, inst.centerY, sx = 1f, sy = 1f, dx = 0f, dy = -gap) }
                                 )
                             )
                             result.add(
                                 inst.copy(
                                     centerY = inst.centerY + gap,
                                     rotationDeg = -inst.rotationDeg,
-                                    points = inst.points.map { it.copy(y = inst.centerY + gap - (it.y - inst.centerY)) }
+                                    points = inst.points.map { it.transformPoint(inst.centerX, inst.centerY, sx = 1f, sy = -1f, dx = 0f, dy = gap) }
                                 )
                             )
                         }
@@ -207,7 +294,10 @@ object ProceduralEngine {
                                     inst.copy(
                                         centerX = inst.centerX + sx * gap,
                                         centerY = inst.centerY + sy * gap,
-                                        rotationDeg = inst.rotationDeg * sx * sy
+                                        rotationDeg = inst.rotationDeg * sx * sy,
+                                        points = inst.points.map {
+                                            it.transformPoint(inst.centerX, inst.centerY, sx = sx, sy = sy, dx = sx * gap, dy = sy * gap)
+                                        }
                                     )
                                 )
                             }
@@ -222,11 +312,12 @@ object ProceduralEngine {
                 val radius = p["radius"] ?: 90f
                 val arcDeg = (p["arcDeg"] ?: 360f).coerceIn(15f, 360f)
                 val spin = (p["spinCopies"] ?: 1f) >= 0.5f
+                val timeSpinDeg = timeSec * 36f
                 val result = mutableListOf<EvaluatedShapeInstance>()
                 for (inst in input) {
                     for (i in 0 until count) {
                         val stepDeg = if (arcDeg >= 359f) arcDeg / count else arcDeg / max(1, count - 1)
-                        val angleDeg = -90f + i * stepDeg
+                        val angleDeg = -90f + i * stepDeg + timeSpinDeg
                         val rad = Math.toRadians(angleDeg.toDouble())
                         val cx = inst.centerX + (cos(rad) * radius).toFloat()
                         val cy = inst.centerY + (sin(rad) * radius).toFloat()
@@ -238,7 +329,7 @@ object ProceduralEngine {
                                 centerX = cx,
                                 centerY = cy,
                                 rotationDeg = rot,
-                                points = inst.points.map { pt -> pt.copy(x = pt.x + dx, y = pt.y + dy) }
+                                points = inst.points.map { pt -> pt.transformPoint(inst.centerX, inst.centerY, dx = dx, dy = dy) }
                             )
                         )
                     }
@@ -265,7 +356,9 @@ object ProceduralEngine {
                                     centerY = inst.centerY + dy,
                                     width = max(8f, inst.width * scaleAcc),
                                     height = max(8f, inst.height * scaleAcc),
-                                    points = inst.points.map { pt -> pt.copy(x = pt.x + dx, y = pt.y + dy) }
+                                    points = inst.points.map { pt ->
+                                        pt.transformPoint(inst.centerX, inst.centerY, sx = scaleAcc, sy = scaleAcc, dx = dx, dy = dy)
+                                    }
                                 )
                             )
                             scaleAcc = (scaleAcc * scaleStep).coerceIn(0.25f, 2.5f)
@@ -309,7 +402,7 @@ object ProceduralEngine {
             ProceduralNodeType.STROKE_DASH -> {
                 val dashLen = (p["dashLen"] ?: 18f).coerceAtLeast(2f)
                 val gapLen = (p["gapLen"] ?: 10f).coerceAtLeast(2f)
-                val phase = p["phase"] ?: 0f
+                val phase = (p["phase"] ?: 0f) + timeSec * 65f
                 input.map { inst ->
                     inst.copy(
                         dashLen = dashLen,
@@ -552,40 +645,75 @@ object ProceduralEngine {
                     """ opacity="${String.format(Locale.US, "%.2f", inst.opacity)}" """
                 } else ""
 
-                when (inst.kind) {
-                    LayerGeometryKind.RECTANGLE -> {
-                        if (inst.waveAmplitude > 0.5f) {
+                if (inst.booleanOp != null && inst.kind in listOf(
+                        LayerGeometryKind.RECTANGLE,
+                        LayerGeometryKind.ELLIPSE,
+                        LayerGeometryKind.POLYGON,
+                        LayerGeometryKind.STAR
+                    )
+                ) {
+                    val dPath = booleanSvgPathData(inst)
+                    bodyBuilder.appendLine("""  <path d="$dPath" fill-rule="evenodd" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}" stroke-linejoin="round"$dashAttr$transformAttr$opacityAttr />""")
+                } else {
+                    when (inst.kind) {
+                        LayerGeometryKind.RECTANGLE -> {
+                            if (inst.waveAmplitude > 0.5f) {
+                                val pts = buildShapeVertices(inst).joinToString(" ") { "${it.first.toInt()},${it.second.toInt()}" }
+                                bodyBuilder.appendLine("""  <polygon points="$pts" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}"$dashAttr$transformAttr$opacityAttr />""")
+                            } else {
+                                val rx = (inst.centerX - inst.width / 2f).toInt()
+                                val ry = (inst.centerY - inst.height / 2f).toInt()
+                                val cr = inst.cornerRadius.toInt()
+                                bodyBuilder.appendLine("""  <rect x="$rx" y="$ry" width="${inst.width.toInt()}" height="${inst.height.toInt()}" rx="$cr" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}"$dashAttr$transformAttr$opacityAttr />""")
+                            }
+                        }
+                        LayerGeometryKind.ELLIPSE -> {
+                            if (inst.waveAmplitude > 0.5f) {
+                                val pts = buildShapeVertices(inst).joinToString(" ") { "${it.first.toInt()},${it.second.toInt()}" }
+                                bodyBuilder.appendLine("""  <polygon points="$pts" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}"$dashAttr$transformAttr$opacityAttr />""")
+                            } else {
+                                bodyBuilder.appendLine("""  <ellipse cx="${inst.centerX.toInt()}" cy="${inst.centerY.toInt()}" rx="${(inst.width / 2f).toInt()}" ry="${(inst.height / 2f).toInt()}" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}"$dashAttr$transformAttr$opacityAttr />""")
+                            }
+                        }
+                        LayerGeometryKind.POLYGON, LayerGeometryKind.STAR -> {
                             val pts = buildShapeVertices(inst).joinToString(" ") { "${it.first.toInt()},${it.second.toInt()}" }
-                            bodyBuilder.appendLine("""  <polygon points="$pts" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}"$dashAttr$transformAttr$opacityAttr />""")
-                        } else {
-                            val rx = (inst.centerX - inst.width / 2f).toInt()
-                            val ry = (inst.centerY - inst.height / 2f).toInt()
-                            val cr = inst.cornerRadius.toInt()
-                            bodyBuilder.appendLine("""  <rect x="$rx" y="$ry" width="${inst.width.toInt()}" height="${inst.height.toInt()}" rx="$cr" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}"$dashAttr$transformAttr$opacityAttr />""")
+                            bodyBuilder.appendLine("""  <polygon points="$pts" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}" stroke-linejoin="round"$dashAttr$transformAttr$opacityAttr />""")
                         }
-                    }
-                    LayerGeometryKind.ELLIPSE -> {
-                        if (inst.waveAmplitude > 0.5f) {
-                            val pts = buildShapeVertices(inst).joinToString(" ") { "${it.first.toInt()},${it.second.toInt()}" }
-                            bodyBuilder.appendLine("""  <polygon points="$pts" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}"$dashAttr$transformAttr$opacityAttr />""")
-                        } else {
-                            bodyBuilder.appendLine("""  <ellipse cx="${inst.centerX.toInt()}" cy="${inst.centerY.toInt()}" rx="${(inst.width / 2f).toInt()}" ry="${(inst.height / 2f).toInt()}" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}"$dashAttr$transformAttr$opacityAttr />""")
+                        LayerGeometryKind.BEZIER_PATH -> {
+                            if (inst.points.size >= 2) {
+                                val dSb = StringBuilder()
+                                val first = inst.points.first()
+                                dSb.append(String.format(Locale.US, "M %.1f %.1f", first.x, first.y))
+                                for (i in 1 until inst.points.size) {
+                                    val prev = inst.points[i - 1]
+                                    val curr = inst.points[i]
+                                    dSb.append(
+                                        String.format(
+                                            Locale.US,
+                                            " C %.1f %.1f, %.1f %.1f, %.1f %.1f",
+                                            prev.handleOutX,
+                                            prev.handleOutY,
+                                            curr.handleInX,
+                                            curr.handleInY,
+                                            curr.x,
+                                            curr.y
+                                        )
+                                    )
+                                }
+                                bodyBuilder.appendLine("""  <path d="$dSb" fill="$fillAttr" stroke="${hexToSvgColor(inst.strokeColorHex)}" stroke-width="${max(2f, inst.strokeWidth)}" stroke-linecap="round" stroke-linejoin="round"$dashAttr$transformAttr$opacityAttr />""")
+                            }
                         }
-                    }
-                    LayerGeometryKind.POLYGON, LayerGeometryKind.STAR -> {
-                        val pts = buildShapeVertices(inst).joinToString(" ") { "${it.first.toInt()},${it.second.toInt()}" }
-                        bodyBuilder.appendLine("""  <polygon points="$pts" fill="$fillAttr" stroke="$strokeAttr" stroke-width="${inst.strokeWidth}" stroke-linejoin="round"$dashAttr$transformAttr$opacityAttr />""")
-                    }
-                    LayerGeometryKind.LINE, LayerGeometryKind.BEZIER_PATH, LayerGeometryKind.FREEHAND, LayerGeometryKind.SPLINE, LayerGeometryKind.BRUSH_STROKE -> {
-                        val pts = if (inst.points.size >= 2) {
-                            inst.points.joinToString(" ") { "${it.x.toInt()},${it.y.toInt()}" }
-                        } else {
-                            "${(inst.centerX - inst.width / 2f).toInt()},${inst.centerY.toInt()} ${(inst.centerX + inst.width / 2f).toInt()},${inst.centerY.toInt()}"
+                        LayerGeometryKind.LINE, LayerGeometryKind.FREEHAND, LayerGeometryKind.SPLINE, LayerGeometryKind.BRUSH_STROKE -> {
+                            val pts = if (inst.points.size >= 2) {
+                                inst.points.joinToString(" ") { "${it.x.toInt()},${it.y.toInt()}" }
+                            } else {
+                                "${(inst.centerX - inst.width / 2f).toInt()},${inst.centerY.toInt()} ${(inst.centerX + inst.width / 2f).toInt()},${inst.centerY.toInt()}"
+                            }
+                            bodyBuilder.appendLine("""  <polyline points="$pts" fill="none" stroke="${hexToSvgColor(inst.strokeColorHex)}" stroke-width="${max(2f, inst.strokeWidth)}" stroke-linecap="round" stroke-linejoin="round"$dashAttr$transformAttr$opacityAttr />""")
                         }
-                        bodyBuilder.appendLine("""  <polyline points="$pts" fill="none" stroke="${hexToSvgColor(inst.strokeColorHex)}" stroke-width="${max(2f, inst.strokeWidth)}" stroke-linecap="round" stroke-linejoin="round"$dashAttr$transformAttr$opacityAttr />""")
-                    }
-                    LayerGeometryKind.TEXT -> {
-                        bodyBuilder.appendLine("""  <text x="${inst.centerX.toInt()}" y="${inst.centerY.toInt()}" fill="${hexToSvgColor(inst.fillColorHex)}" font-family="sans-serif" font-size="${inst.fontSize.toInt()}" text-anchor="middle" dominant-baseline="central"$transformAttr$opacityAttr>${inst.textContent}</text>""")
+                        LayerGeometryKind.TEXT -> {
+                            bodyBuilder.appendLine("""  <text x="${inst.centerX.toInt()}" y="${inst.centerY.toInt()}" fill="${hexToSvgColor(inst.fillColorHex)}" font-family="sans-serif" font-size="${inst.fontSize.toInt()}" text-anchor="middle" dominant-baseline="central"$transformAttr$opacityAttr>${inst.textContent}</text>""")
+                        }
                     }
                 }
             }
@@ -599,6 +727,61 @@ object ProceduralEngine {
         sb.append(bodyBuilder)
         sb.appendLine("</svg>")
         return sb.toString()
+    }
+
+    private fun booleanSvgPathData(inst: EvaluatedShapeInstance): String {
+        val sb = StringBuilder()
+        try {
+            val path = buildAndroidPath(inst)
+            val pm = PathMeasure(path, false)
+            val pos = FloatArray(2)
+            do {
+                val len = pm.length
+                if (len > 0.5f) {
+                    val steps = max(16, min(96, (len / 6f).toInt()))
+                    for (i in 0..steps) {
+                        val dist = (len * i) / steps
+                        pm.getPosTan(dist, pos, null)
+                        if (i == 0) {
+                            sb.append(String.format(Locale.US, "M %.1f %.1f ", pos[0], pos[1]))
+                        } else {
+                            sb.append(String.format(Locale.US, "L %.1f %.1f ", pos[0], pos[1]))
+                        }
+                    }
+                    sb.append("Z ")
+                }
+            } while (pm.nextContour())
+        } catch (_: Throwable) {
+            // Pure JVM fallback below
+        }
+
+        if (sb.isNotEmpty()) return sb.toString().trim()
+
+        // Deterministic compound path (outer shape contour + boolean cutter contour)
+        val outerPts = buildShapeVertices(inst)
+        outerPts.forEachIndexed { idx, (px, py) ->
+            if (idx == 0) sb.append(String.format(Locale.US, "M %.1f %.1f ", px, py))
+            else sb.append(String.format(Locale.US, "L %.1f %.1f ", px, py))
+        }
+        sb.append("Z ")
+
+        val boolOp = inst.booleanOp
+        if (boolOp != null) {
+            val cx = inst.centerX + boolOp.offsetX
+            val cy = inst.centerY + boolOp.offsetY
+            val rx = max(6f, inst.width * boolOp.scaleRatio * 0.5f)
+            val ry = max(6f, inst.height * boolOp.scaleRatio * 0.5f)
+            val steps = 20
+            for (i in 0 until steps) {
+                val angle = (2.0 * PI * i) / steps
+                val px = cx + (cos(angle) * rx).toFloat()
+                val py = cy + (sin(angle) * ry).toFloat()
+                if (i == 0) sb.append(String.format(Locale.US, "M %.1f %.1f ", px, py))
+                else sb.append(String.format(Locale.US, "L %.1f %.1f ", px, py))
+            }
+            sb.append("Z")
+        }
+        return sb.toString().trim()
     }
 
     /**
@@ -681,17 +864,33 @@ object ProceduralEngine {
                 }
 
                 if (inst.strokeWidth > 0.2f && inst.kind != LayerGeometryKind.TEXT) {
-                    val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        style = Paint.Style.STROKE
-                        strokeWidth = inst.strokeWidth
-                        strokeCap = Paint.Cap.ROUND
-                        strokeJoin = Paint.Join.ROUND
-                        color = applyAlpha(inst.strokeColorHex.toInt(), inst.opacity)
-                        if (inst.dashLen > 0f && inst.dashGap > 0f) {
-                            pathEffect = DashPathEffect(floatArrayOf(inst.dashLen, inst.dashGap), inst.dashPhase)
+                    if (inst.kind == LayerGeometryKind.BRUSH_STROKE && inst.points.size >= 2) {
+                        val segPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            style = Paint.Style.STROKE
+                            strokeCap = Paint.Cap.ROUND
+                            strokeJoin = Paint.Join.ROUND
+                            color = applyAlpha(inst.strokeColorHex.toInt(), inst.opacity)
                         }
+                        for (i in 1 until inst.points.size) {
+                            val p0 = inst.points[i - 1]
+                            val p1 = inst.points[i]
+                            val pFactor = ((p0.pressure + p1.pressure) * 0.5f).coerceIn(0.2f, 1.8f)
+                            segPaint.strokeWidth = max(1.5f, inst.strokeWidth * pFactor)
+                            canvas.drawLine(p0.x, p0.y, p1.x, p1.y, segPaint)
+                        }
+                    } else {
+                        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            style = Paint.Style.STROKE
+                            strokeWidth = inst.strokeWidth
+                            strokeCap = Paint.Cap.ROUND
+                            strokeJoin = Paint.Join.ROUND
+                            color = applyAlpha(inst.strokeColorHex.toInt(), inst.opacity)
+                            if (inst.dashLen > 0f && inst.dashGap > 0f) {
+                                pathEffect = DashPathEffect(floatArrayOf(inst.dashLen, inst.dashGap), inst.dashPhase)
+                            }
+                        }
+                        canvas.drawPath(path, strokePaint)
                     }
-                    canvas.drawPath(path, strokePaint)
                 }
 
                 canvas.restore()
@@ -744,7 +943,27 @@ object ProceduralEngine {
                 }
                 path.close()
             }
-            LayerGeometryKind.LINE, LayerGeometryKind.BEZIER_PATH, LayerGeometryKind.FREEHAND, LayerGeometryKind.SPLINE, LayerGeometryKind.BRUSH_STROKE -> {
+            LayerGeometryKind.BEZIER_PATH -> {
+                if (inst.points.size >= 2) {
+                    path.moveTo(inst.points.first().x, inst.points.first().y)
+                    for (i in 1 until inst.points.size) {
+                        val prev = inst.points[i - 1]
+                        val curr = inst.points[i]
+                        path.cubicTo(
+                            prev.handleOutX,
+                            prev.handleOutY,
+                            curr.handleInX,
+                            curr.handleInY,
+                            curr.x,
+                            curr.y
+                        )
+                    }
+                } else {
+                    path.moveTo(inst.centerX - inst.width / 2f, inst.centerY)
+                    path.lineTo(inst.centerX + inst.width / 2f, inst.centerY)
+                }
+            }
+            LayerGeometryKind.LINE, LayerGeometryKind.FREEHAND, LayerGeometryKind.SPLINE, LayerGeometryKind.BRUSH_STROKE -> {
                 if (inst.points.size >= 2) {
                     path.moveTo(inst.points.first().x, inst.points.first().y)
                     for (i in 1 until inst.points.size) {
@@ -768,6 +987,54 @@ object ProceduralEngine {
             }
             LayerGeometryKind.TEXT -> {}
         }
+
+        // Apply non-destructive Skia Boolean Path Operation if present
+        inst.booleanOp?.let { boolOp ->
+            val isClosedShape = inst.kind in listOf(
+                LayerGeometryKind.RECTANGLE,
+                LayerGeometryKind.ELLIPSE,
+                LayerGeometryKind.POLYGON,
+                LayerGeometryKind.STAR
+            )
+            if (isClosedShape) {
+                val cutterPath = Path()
+                val cx = inst.centerX + boolOp.offsetX
+                val cy = inst.centerY + boolOp.offsetY
+                val cw = max(12f, inst.width * boolOp.scaleRatio)
+                val ch = max(12f, inst.height * boolOp.scaleRatio)
+                when (boolOp.cutterShape) {
+                    0 -> { // Circle / Oval cutter
+                        cutterPath.addOval(
+                            RectF(cx - cw / 2f, cy - ch / 2f, cx + cw / 2f, cy + ch / 2f),
+                            Path.Direction.CW
+                        )
+                    }
+                    1 -> { // Rounded Box cutter
+                        cutterPath.addRoundRect(
+                            RectF(cx - cw / 2f, cy - ch / 2f, cx + cw / 2f, cy + ch / 2f),
+                            cw * 0.15f,
+                            ch * 0.15f,
+                            Path.Direction.CW
+                        )
+                    }
+                    else -> { // Diamond / Rhombus cutter
+                        cutterPath.moveTo(cx, cy - ch / 2f)
+                        cutterPath.lineTo(cx + cw / 2f, cy)
+                        cutterPath.lineTo(cx, cy + ch / 2f)
+                        cutterPath.lineTo(cx - cw / 2f, cy)
+                        cutterPath.close()
+                    }
+                }
+                val op = when (boolOp.opMode) {
+                    0 -> Path.Op.DIFFERENCE
+                    1 -> Path.Op.UNION
+                    2 -> Path.Op.INTERSECT
+                    else -> Path.Op.XOR
+                }
+                path.op(cutterPath, op)
+            }
+        }
+
         return path
     }
 
@@ -836,6 +1103,7 @@ object ProceduralEngine {
                 pObj.put("inY", pt.handleInY.toDouble())
                 pObj.put("outX", pt.handleOutX.toDouble())
                 pObj.put("outY", pt.handleOutY.toDouble())
+                pObj.put("pressure", pt.pressure.toDouble())
                 ptsArr.put(pObj)
             }
             lObj.put("points", ptsArr)
@@ -845,9 +1113,12 @@ object ProceduralEngine {
                 val nObj = JSONObject()
                 nObj.put("id", node.id)
                 nObj.put("type", node.type.name)
+                nObj.put("protoIdentifier", "graphene_core::ops::${node.type.name.lowercase(Locale.ROOT)}")
                 nObj.put("enabled", node.enabled)
                 nObj.put("collapsed", node.collapsed)
                 nObj.put("shadowColorHex", node.shadowColorHex)
+                nObj.put("graphX", node.graphX.toDouble())
+                nObj.put("graphY", node.graphY.toDouble())
                 val paramsObj = JSONObject()
                 for ((k, v) in node.params) {
                     paramsObj.put(k, v.toDouble())
@@ -859,6 +1130,14 @@ object ProceduralEngine {
             layersArr.put(lObj)
         }
         root.put("layers", layersArr)
+
+        // Include Graphene Node Network DAG descriptor for desktop/web interoperability
+        val networkObj = JSONObject()
+        networkObj.put("engine", "graphene-procedural-dag")
+        networkObj.put("totalLayers", doc.layers.size)
+        networkObj.put("totalProceduralNodes", doc.layers.sumOf { it.nodes.size })
+        root.put("grapheneNetwork", networkObj)
+
         return root.toString(2)
     }
 
@@ -882,7 +1161,8 @@ object ProceduralEngine {
                             handleInX = pObj.optDouble("inX", px.toDouble()).toFloat(),
                             handleInY = pObj.optDouble("inY", py.toDouble()).toFloat(),
                             handleOutX = pObj.optDouble("outX", px.toDouble()).toFloat(),
-                            handleOutY = pObj.optDouble("outY", py.toDouble()).toFloat()
+                            handleOutY = pObj.optDouble("outY", py.toDouble()).toFloat(),
+                            pressure = pObj.optDouble("pressure", 1.0).toFloat()
                         )
                     )
                 }
@@ -906,7 +1186,9 @@ object ProceduralEngine {
                             enabled = nObj.optBoolean("enabled", true),
                             collapsed = nObj.optBoolean("collapsed", false),
                             params = paramsMap,
-                            shadowColorHex = nObj.optLong("shadowColorHex", 0xFF000000L)
+                            shadowColorHex = nObj.optLong("shadowColorHex", 0xFF000000L),
+                            graphX = nObj.optDouble("graphX", 0.0).toFloat(),
+                            graphY = nObj.optDouble("graphY", 0.0).toFloat()
                         )
                     )
                 }

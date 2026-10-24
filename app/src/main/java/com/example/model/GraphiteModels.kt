@@ -202,7 +202,27 @@ enum class ProceduralNodeType(
             NodeParamSpec("gapLen", "Spazio Vuoto", 4f, 80f, 10f, "px"),
             NodeParamSpec("phase", "Scorrimento Fase", 0f, 100f, 0f, "px")
         )
+    ),
+    BOOLEAN_OP(
+        titleIt = "Operazione Booleana (Skia Path.Op)",
+        titleEn = "Boolean Operation",
+        category = NodeCategory.VECTOR_MODIFIER,
+        descriptionIt = "Sottrae, unisce, interseca o esclude (XOR) una sagoma secondaria con algebra vettoriale Skia.",
+        inputType = NodeDataType.VECTOR,
+        outputType = NodeDataType.VECTOR,
+        paramSpecs = listOf(
+            NodeParamSpec("opMode", "Modo (0=Sottrai, 1=Unisci, 2=Interseca, 3=XOR)", 0f, 3f, 0f, ""),
+            NodeParamSpec("cutterShape", "Sagoma (0=Cerchio, 1=Rett, 2=Esagono)", 0f, 2f, 0f, ""),
+            NodeParamSpec("offsetX", "Offset Taglio X", -180f, 180f, 0f, "px"),
+            NodeParamSpec("offsetY", "Offset Taglio Y", -180f, 180f, 0f, "px"),
+            NodeParamSpec("scaleRatio", "Scala Sagoma", 0.2f, 1.4f, 0.55f, "×")
+        )
     )
+}
+
+enum class NodeGraphViewMode(val labelIt: String) {
+    STACK("Stack Mobile"),
+    CANVAS_2D("Lavagna 2D DAG")
 }
 
 data class ProceduralNode(
@@ -211,7 +231,9 @@ data class ProceduralNode(
     val enabled: Boolean = true,
     val collapsed: Boolean = false,
     val params: Map<String, Float> = type.paramSpecs.associate { it.key to it.defaultVal },
-    val shadowColorHex: Long = 0xFF000000L
+    val shadowColorHex: Long = 0xFF000000L,
+    val graphX: Float = 0f,
+    val graphY: Float = 0f
 )
 
 enum class BlendModeType(val labelIt: String) {
@@ -244,7 +266,8 @@ data class Vec2Point(
     val handleInX: Float = x,
     val handleInY: Float = y,
     val handleOutX: Float = x,
-    val handleOutY: Float = y
+    val handleOutY: Float = y,
+    val pressure: Float = 1.0f
 )
 
 data class GraphiteLayer(

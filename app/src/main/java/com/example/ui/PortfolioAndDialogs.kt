@@ -4,6 +4,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,6 +36,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Hexagon
 import androidx.compose.material.icons.filled.IosShare
@@ -108,7 +113,26 @@ fun PortfolioAndGalleryScreen(
     viewModel: GraphiteViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val dateFormat = remember { SimpleDateFormat("dd MMM HH:mm", Locale.getDefault()) }
+
+    // Native Storage Access Framework (SAF) Launcher to import a .graphite file from device
+    val importGraphiteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                if (!content.isNullOrBlank()) {
+                    viewModel.importGraphiteJsonDocument(content)
+                } else {
+                    viewModel.showToast("File vuoto o illeggibile")
+                }
+            } catch (e: Exception) {
+                viewModel.showToast("Errore apertura file: ${e.localizedMessage}")
+            }
+        }
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(14.dp),
@@ -166,7 +190,7 @@ fun PortfolioAndGalleryScreen(
                         }
 
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Button(
@@ -180,8 +204,26 @@ fun PortfolioAndGalleryScreen(
                                     .testTag("new_document_button")
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Nuovo Progetto", fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Nuovo", fontWeight = FontWeight.Bold)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    importGraphiteLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("import_graphite_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FileOpen,
+                                    contentDescription = null,
+                                    tint = DataRaster,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Importa", color = GraphiteNearWhite)
                             }
 
                             OutlinedButton(
@@ -191,13 +233,13 @@ fun PortfolioAndGalleryScreen(
                                     .testTag("portfolio_export_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.IosShare,
+                                    imageVector = Icons.Default.Download,
                                     contentDescription = null,
                                     tint = DataGraphic,
                                     modifier = Modifier.size(18.dp)
                                 )
-                                Spacer(Modifier.width(6.dp))
-                                Text("Esporta SVG/PNG", color = GraphiteNearWhite)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Salva/Esporta", color = GraphiteNearWhite)
                             }
                         }
                     }
@@ -697,22 +739,73 @@ fun ExportDocumentDialog(
     onCopiedToast: (String) -> Unit
 ) {
     val context = LocalContext.current
-    var selectedFormat by remember { mutableIntStateOf(0) } // 0 = SVG, 1 = Graphite JSON
+    var selectedFormat by remember { mutableIntStateOf(0) } // 0 = SVG, 1 = PNG HD, 2 = .graphite JSON
     val svgCode = remember(doc) { ProceduralEngine.exportToSvg(doc) }
     val graphiteJson = remember(doc) { ProceduralEngine.toGraphiteJson(doc) }
-    val previewBitmap = remember(doc) { ProceduralEngine.renderToBitmap(doc, targetSide = 480) }
+    val previewBitmap = remember(doc) { ProceduralEngine.renderToBitmap(doc, targetSide = 640) }
 
-    val activeText = if (selectedFormat == 0) svgCode else graphiteJson
+    val activeText = when (selectedFormat) {
+        0 -> svgCode
+        1 -> "Immagine Raster PNG Lossless (${doc.artboardWidth}×${doc.artboardHeight}px) pronta per il salvataggio su file system."
+        else -> graphiteJson
+    }
+
+    // Native Storage Access Framework (SAF) Launchers for direct file save on device
+    val createSvgLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("image/svg+xml")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(svgCode.toByteArray(Charsets.UTF_8))
+                }
+                onCopiedToast("File SVG salvato correttamente sul dispositivo!")
+            } catch (e: Exception) {
+                onCopiedToast("Errore salvataggio SVG: ${e.localizedMessage}")
+            }
+        }
+    }
+
+    val createPngLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("image/png")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val hiResBmp = ProceduralEngine.renderToBitmap(doc, targetSide = 2048)
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    hiResBmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+                onCopiedToast("Immagine PNG HD (2048px) salvata sul dispositivo!")
+            } catch (e: Exception) {
+                onCopiedToast("Errore salvataggio PNG: ${e.localizedMessage}")
+            }
+        }
+    }
+
+    val createGraphiteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(graphiteJson.toByteArray(Charsets.UTF_8))
+                }
+                onCopiedToast("Progetto .graphite salvato sul dispositivo!")
+            } catch (e: Exception) {
+                onCopiedToast("Errore salvataggio .graphite: ${e.localizedMessage}")
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = GraphitePanelBg,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.IosShare, contentDescription = null, tint = DataGraphic)
+                Icon(Icons.Default.Download, contentDescription = null, tint = DataGraphic)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "Esporta '${doc.name}'",
+                    text = "Salva ed Esporta '${doc.name}'",
                     style = MaterialTheme.typography.titleMedium,
                     color = GraphiteNearWhite
                 )
@@ -725,7 +818,7 @@ fun ExportDocumentDialog(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(150.dp)
+                        .height(145.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(GraphiteNearBlack)
                         .border(1.dp, GraphiteDimGray, RoundedCornerShape(10.dp))
@@ -740,16 +833,24 @@ fun ExportDocumentDialog(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                ) {
                     FilterChip(
                         selected = selectedFormat == 0,
                         onClick = { selectedFormat = 0 },
-                        label = { Text("SVG 1.1 Vettoriale") }
+                        label = { Text("SVG 1.1") }
                     )
                     FilterChip(
                         selected = selectedFormat == 1,
                         onClick = { selectedFormat = 1 },
-                        label = { Text(".graphite JSON") }
+                        label = { Text("PNG HD (2048px)") }
+                    )
+                    FilterChip(
+                        selected = selectedFormat == 2,
+                        onClick = { selectedFormat = 2 },
+                        label = { Text(".graphite DAG") }
                     )
                 }
 
@@ -758,7 +859,7 @@ fun ExportDocumentDialog(
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(110.dp)
+                        .height(100.dp)
                         .border(1.dp, GraphiteDimGray, RoundedCornerShape(8.dp))
                         .padding(8.dp)
                 ) {
@@ -772,40 +873,54 @@ fun ExportDocumentDialog(
             }
         },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(
-                            ClipData.newPlainText(
-                                if (selectedFormat == 0) "${doc.name}.svg" else "${doc.name}.graphite",
-                                activeText
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (selectedFormat != 1) {
+                    OutlinedButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText(
+                                    if (selectedFormat == 0) "${doc.name}.svg" else "${doc.name}.graphite",
+                                    activeText
+                                )
                             )
-                        )
-                        onCopiedToast("Codice ${if (selectedFormat == 0) "SVG" else ".graphite"} copiato negli appunti!")
-                        onDismiss()
+                            onCopiedToast("Codice ${if (selectedFormat == 0) "SVG" else ".graphite"} copiato negli appunti!")
+                        }
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Copia")
                     }
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Copia")
                 }
 
-                Button(
+                OutlinedButton(
                     onClick = {
                         val sendIntent = Intent(Intent.ACTION_SEND).apply {
                             type = if (selectedFormat == 0) "image/svg+xml" else "application/json"
                             putExtra(Intent.EXTRA_TITLE, doc.name)
-                            putExtra(Intent.EXTRA_TEXT, activeText)
+                            putExtra(Intent.EXTRA_TEXT, if (selectedFormat == 0) svgCode else graphiteJson)
                         }
                         context.startActivity(Intent.createChooser(sendIntent, "Condividi ${doc.name}"))
-                        onDismiss()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = DataGraphic, contentColor = GraphiteNearBlack)
+                    }
                 ) {
                     Icon(Icons.Default.IosShare, contentDescription = null, modifier = Modifier.size(16.dp))
+                }
+
+                Button(
+                    onClick = {
+                        val cleanBaseName = doc.name.lowercase(Locale.ROOT).replace(Regex("[^a-z0-9_-]"), "_")
+                        when (selectedFormat) {
+                            0 -> createSvgLauncher.launch("$cleanBaseName.svg")
+                            1 -> createPngLauncher.launch("$cleanBaseName.png")
+                            else -> createGraphiteLauncher.launch("$cleanBaseName.graphite")
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DataGraphic, contentColor = GraphiteNearBlack),
+                    modifier = Modifier.testTag("save_file_saf_button")
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Condividi")
+                    Text("Salva File", fontWeight = FontWeight.Bold)
                 }
             }
         },

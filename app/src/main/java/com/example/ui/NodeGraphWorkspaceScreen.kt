@@ -4,6 +4,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,7 +35,9 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Functions
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.ViewStream
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -54,12 +59,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -67,12 +74,17 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.example.engine.ProceduralEngine
 import com.example.model.GraphiteLayer
 import com.example.model.NodeDataType
+import com.example.model.NodeGraphViewMode
 import com.example.model.NodeParamSpec
 import com.example.model.ProceduralNode
 import com.example.ui.theme.DataArtboard
@@ -94,6 +106,7 @@ import com.example.viewmodel.MobileWorkspaceTab
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 @Composable
 fun NodeGraphWorkspaceScreen(
@@ -213,16 +226,69 @@ fun NodeGraphWorkspaceScreen(
                         }
                     }
 
-                    // Quick 1-Tap Procedural Recipes
+                    // Mode Switcher (Vertical Stack vs 2D Interactive DAG Canvas) + Quick 1-Tap Procedural Recipes
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.horizontalScroll(rememberScrollState())
                     ) {
+                        // Dual-Mode Graph Switcher
+                        val is2D = uiState.nodeGraphViewMode == NodeGraphViewMode.CANVAS_2D
+                        FilterChip(
+                            selected = !is2D,
+                            onClick = { viewModel.setNodeGraphViewMode(NodeGraphViewMode.STACK) },
+                            label = { Text("Stack Mobile", style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.ViewStream,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = DataVector.copy(alpha = 0.25f),
+                                selectedLabelColor = GraphiteNearWhite,
+                                selectedLeadingIconColor = DataVector
+                            ),
+                            modifier = Modifier.testTag("mode_stack_chip")
+                        )
+                        FilterChip(
+                            selected = is2D,
+                            onClick = { viewModel.setNodeGraphViewMode(NodeGraphViewMode.CANVAS_2D) },
+                            label = { Text("Lavagna 2D DAG", style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.GridView,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = DataGraphic.copy(alpha = 0.25f),
+                                selectedLabelColor = GraphiteNearWhite,
+                                selectedLeadingIconColor = DataGraphic
+                            ),
+                            modifier = Modifier.testTag("mode_2d_dag_chip")
+                        )
+
                         Text(
-                            text = "Preset:",
+                            text = "• Preset:",
                             style = MaterialTheme.typography.labelMedium,
                             color = GraphiteLightGray
+                        )
+                        AssistChip(
+                            onClick = { viewModel.applyProceduralPresetRecipe("boolean_gear") },
+                            label = { Text("Ingranaggio Booleano", style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = DataVector,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(containerColor = GraphiteDarkGray),
+                            modifier = Modifier.testTag("preset_boolean_gear_chip")
                         )
                         AssistChip(
                             onClick = { viewModel.applyProceduralPresetRecipe("mandala") },
@@ -267,63 +333,86 @@ fun NodeGraphWorkspaceScreen(
                 }
             }
 
-            // Main Scrollable Node Pipeline
+            // Main Node Pipeline Area: either Vertical Mobile Stack or 2D Free-Form DAG Canvas
             if (selectedLayer != null) {
-                LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 96.dp),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("node_graph_list")
-                ) {
-                    // 1. Source Geometry Generator Node
-                    item(key = "source_${selectedLayer.id}") {
-                        SourceGeometryNodeCard(
-                            layer = selectedLayer,
-                            onInspectGeometry = { viewModel.selectTab(MobileWorkspaceTab.LAYERS_INSPECTOR) }
-                        )
-                        NodeWireConnector(
-                            fromType = selectedLayer.kind.dataType,
-                            toType = selectedLayer.nodes.firstOrNull()?.type?.inputType ?: NodeDataType.ARTBOARD,
-                            label = "Flusso ${selectedLayer.kind.dataType.label}"
-                        )
-                    }
+                if (uiState.nodeGraphViewMode == NodeGraphViewMode.CANVAS_2D) {
+                    Interactive2DDagCanvas(
+                        layer = selectedLayer,
+                        selectedNodeId = uiState.selectedNodeId,
+                        evaluatedCount = evaluatedInstances.size,
+                        onSelectNode = { viewModel.selectNode(it) },
+                        onMoveNode = { nodeId, nx, ny, finished ->
+                            viewModel.moveNodeIn2DGraph(selectedLayer.id, nodeId, nx, ny, finished)
+                        },
+                        onToggleEnabled = { nodeId -> viewModel.toggleNodeEnabled(selectedLayer.id, nodeId) },
+                        onDeleteNode = { nodeId -> viewModel.removeNode(selectedLayer.id, nodeId) },
+                        onParamChange = { nodeId, key, value, commit ->
+                            viewModel.updateNodeParam(selectedLayer.id, nodeId, key, value, recordHistory = commit)
+                        },
+                        onOpenMathInput = { nodeId, spec, currentVal ->
+                            mathDialogTarget = Triple(nodeId, spec, currentVal)
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("interactive_2d_dag_canvas")
+                    )
+                } else {
+                    LazyColumn(
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 96.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("node_graph_list")
+                    ) {
+                        // 1. Source Geometry Generator Node
+                        item(key = "source_${selectedLayer.id}") {
+                            SourceGeometryNodeCard(
+                                layer = selectedLayer,
+                                onInspectGeometry = { viewModel.selectTab(MobileWorkspaceTab.LAYERS_INSPECTOR) }
+                            )
+                            NodeWireConnector(
+                                fromType = selectedLayer.kind.dataType,
+                                toType = selectedLayer.nodes.firstOrNull()?.type?.inputType ?: NodeDataType.ARTBOARD,
+                                label = "Flusso ${selectedLayer.kind.dataType.label}"
+                            )
+                        }
 
-                    // 2. Non-destructive Procedural Modifier Nodes
-                    itemsIndexed(
-                        items = selectedLayer.nodes,
-                        key = { _, node -> node.id }
-                    ) { index, node ->
-                        ProceduralNodeCard(
-                            node = node,
-                            index = index,
-                            totalNodes = selectedLayer.nodes.size,
-                            onToggleEnabled = { viewModel.toggleNodeEnabled(selectedLayer.id, node.id) },
-                            onMoveUp = { viewModel.moveNodeOrder(selectedLayer.id, node.id, -1) },
-                            onMoveDown = { viewModel.moveNodeOrder(selectedLayer.id, node.id, 1) },
-                            onDelete = { viewModel.removeNode(selectedLayer.id, node.id) },
-                            onParamChange = { key, value, commit ->
-                                viewModel.updateNodeParam(selectedLayer.id, node.id, key, value, recordHistory = commit)
-                            },
-                            onOpenMathInput = { spec, currentVal ->
-                                mathDialogTarget = Triple(node.id, spec, currentVal)
-                            }
-                        )
+                        // 2. Non-destructive Procedural Modifier Nodes
+                        itemsIndexed(
+                            items = selectedLayer.nodes,
+                            key = { _, node -> node.id }
+                        ) { index, node ->
+                            ProceduralNodeCard(
+                                node = node,
+                                index = index,
+                                totalNodes = selectedLayer.nodes.size,
+                                onToggleEnabled = { viewModel.toggleNodeEnabled(selectedLayer.id, node.id) },
+                                onMoveUp = { viewModel.moveNodeOrder(selectedLayer.id, node.id, -1) },
+                                onMoveDown = { viewModel.moveNodeOrder(selectedLayer.id, node.id, 1) },
+                                onDelete = { viewModel.removeNode(selectedLayer.id, node.id) },
+                                onParamChange = { key, value, commit ->
+                                    viewModel.updateNodeParam(selectedLayer.id, node.id, key, value, recordHistory = commit)
+                                },
+                                onOpenMathInput = { spec, currentVal ->
+                                    mathDialogTarget = Triple(node.id, spec, currentVal)
+                                }
+                            )
 
-                        val nextInputType = selectedLayer.nodes.getOrNull(index + 1)?.type?.inputType ?: NodeDataType.ARTBOARD
-                        NodeWireConnector(
-                            fromType = node.type.outputType,
-                            toType = nextInputType,
-                            label = "${node.type.outputType.label} → ${nextInputType.label}"
-                        )
-                    }
+                            val nextInputType = selectedLayer.nodes.getOrNull(index + 1)?.type?.inputType ?: NodeDataType.ARTBOARD
+                            NodeWireConnector(
+                                fromType = node.type.outputType,
+                                toType = nextInputType,
+                                label = "${node.type.outputType.label} → ${nextInputType.label}"
+                            )
+                        }
 
-                    // 3. Output Artboard Compositor Node
-                    item(key = "output_${selectedLayer.id}") {
-                        OutputCompositorNodeCard(
-                            layer = selectedLayer,
-                            instanceCount = evaluatedInstances.size,
-                            onAddNodeClick = { viewModel.setNodeCatalogVisible(true) }
-                        )
+                        // 3. Output Artboard Compositor Node
+                        item(key = "output_${selectedLayer.id}") {
+                            OutputCompositorNodeCard(
+                                layer = selectedLayer,
+                                instanceCount = evaluatedInstances.size,
+                                onAddNodeClick = { viewModel.setNodeCatalogVisible(true) }
+                            )
+                        }
                     }
                 }
             }
@@ -767,6 +856,420 @@ private fun OutputCompositorNodeCard(
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("Inserisci Nodo", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Interactive2DDagCanvas(
+    layer: GraphiteLayer,
+    selectedNodeId: String?,
+    evaluatedCount: Int,
+    onSelectNode: (String) -> Unit,
+    onMoveNode: (String, Float, Float, Boolean) -> Unit,
+    onToggleEnabled: (String) -> Unit,
+    onDeleteNode: (String) -> Unit,
+    onParamChange: (String, String, Float, Boolean) -> Unit,
+    onOpenMathInput: (String, NodeParamSpec, Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var boardPanX by remember { mutableFloatStateOf(0f) }
+    var boardPanY by remember { mutableFloatStateOf(0f) }
+
+    val density = LocalDensity.current
+    val nodeW = 190.dp
+    val nodeH = 82.dp
+    val nodeWPx = with(density) { nodeW.toPx() }
+    val nodeHPx = with(density) { nodeH.toPx() }
+
+    val activeNode = layer.nodes.find { it.id == selectedNodeId } ?: layer.nodes.firstOrNull()
+
+    fun nodePositionPx(index: Int, node: ProceduralNode): Offset {
+        val defX = 240f + index * 235f
+        val defY = 70f + (index % 2) * 125f
+        val gx = if (node.graphX > 1f) node.graphX else defX
+        val gy = if (node.graphY > 1f) node.graphY else defY
+        return Offset(gx + boardPanX, gy + boardPanY)
+    }
+
+    val sourcePosPx = Offset(24f + boardPanX, 120f + boardPanY)
+    val outputPosPx = Offset(
+        260f + max(1, layer.nodes.size) * 235f + boardPanX,
+        120f + boardPanY
+    )
+
+    Box(modifier = modifier) {
+        // 1. 2D Board Background + Cubic Bézier Wires Canvas
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        boardPanX = (boardPanX + dragAmount.x).coerceIn(-1200f, 600f)
+                        boardPanY = (boardPanY + dragAmount.y).coerceIn(-600f, 600f)
+                    }
+                }
+        ) {
+            // Draw Cubic Bézier Wires from Source -> Node 0 -> ... -> Output
+            val pointsChain = mutableListOf<Triple<Offset, Offset, Color>>()
+            if (layer.nodes.isEmpty()) {
+                val start = Offset(sourcePosPx.x + nodeWPx * 0.85f, sourcePosPx.y + nodeHPx * 0.5f)
+                val end = Offset(outputPosPx.x, outputPosPx.y + nodeHPx * 0.5f)
+                pointsChain.add(Triple(start, end, layer.kind.dataType.color))
+            } else {
+                val firstNodePos = nodePositionPx(0, layer.nodes.first())
+                pointsChain.add(
+                    Triple(
+                        Offset(sourcePosPx.x + nodeWPx * 0.85f, sourcePosPx.y + nodeHPx * 0.5f),
+                        Offset(firstNodePos.x, firstNodePos.y + nodeHPx * 0.5f),
+                        layer.kind.dataType.color
+                    )
+                )
+                for (i in 0 until layer.nodes.size - 1) {
+                    val currNode = layer.nodes[i]
+                    val nextNode = layer.nodes[i + 1]
+                    val p0 = nodePositionPx(i, currNode)
+                    val p1 = nodePositionPx(i + 1, nextNode)
+                    pointsChain.add(
+                        Triple(
+                            Offset(p0.x + nodeWPx, p0.y + nodeHPx * 0.5f),
+                            Offset(p1.x, p1.y + nodeHPx * 0.5f),
+                            currNode.type.outputType.color
+                        )
+                    )
+                }
+                val lastIdx = layer.nodes.lastIndex
+                val lastNode = layer.nodes[lastIdx]
+                val lastPos = nodePositionPx(lastIdx, lastNode)
+                pointsChain.add(
+                    Triple(
+                        Offset(lastPos.x + nodeWPx, lastPos.y + nodeHPx * 0.5f),
+                        Offset(outputPosPx.x, outputPosPx.y + nodeHPx * 0.5f),
+                        lastNode.type.outputType.color
+                    )
+                )
+            }
+
+            for ((start, end, wireColor) in pointsChain) {
+                val ctrlDx = max(60f, kotlin.math.abs(end.x - start.x) * 0.5f)
+                val wirePath = Path().apply {
+                    moveTo(start.x, start.y)
+                    cubicTo(
+                        start.x + ctrlDx, start.y,
+                        end.x - ctrlDx, end.y,
+                        end.x, end.y
+                    )
+                }
+                drawPath(
+                    path = wirePath,
+                    color = wireColor.copy(alpha = 0.85f),
+                    style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round)
+                )
+                // Midpoint data-flow socket pulse
+                val midX = (start.x + end.x) * 0.5f
+                val midY = (start.y + end.y) * 0.5f
+                drawCircle(
+                    color = wireColor,
+                    radius = 5.dp.toPx(),
+                    center = Offset(midX, midY)
+                )
+            }
+        }
+
+        // 2. Source Node Block on 2D Board
+        Surface(
+            color = GraphitePanelBg,
+            shape = RoundedCornerShape(10.dp),
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .offset { IntOffset(sourcePosPx.x.roundToInt(), sourcePosPx.y.roundToInt()) }
+                .size(width = nodeW * 0.85f, height = nodeH)
+                .border(1.5.dp, DataVector, RoundedCornerShape(10.dp))
+        ) {
+            Column(
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.padding(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(CircleShape)
+                            .background(DataVector)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "Sorgente 2D",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = DataVector
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = layer.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = GraphiteNearWhite,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = layer.kind.labelIt,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = GraphiteLightGray
+                )
+            }
+        }
+
+        // 3. Draggable Procedural Node Blocks in 2D Space
+        layer.nodes.forEachIndexed { index, node ->
+            val posPx = nodePositionPx(index, node)
+            val isSelected = node.id == activeNode?.id
+            val borderCol = if (!node.enabled) GraphiteDimGray else if (isSelected) DataGraphic else node.type.outputType.color
+
+            var dragOffsetX by remember(node.id, node.graphX) {
+                mutableFloatStateOf(if (node.graphX > 1f) node.graphX else 240f + index * 235f)
+            }
+            var dragOffsetY by remember(node.id, node.graphY) {
+                mutableFloatStateOf(if (node.graphY > 1f) node.graphY else 70f + (index % 2) * 125f)
+            }
+
+            Surface(
+                color = if (isSelected) GraphiteDarkGray else GraphitePanelBg,
+                shape = RoundedCornerShape(10.dp),
+                tonalElevation = if (isSelected) 10.dp else 6.dp,
+                modifier = Modifier
+                    .offset { IntOffset((dragOffsetX + boardPanX).roundToInt(), (dragOffsetY + boardPanY).roundToInt()) }
+                    .size(width = nodeW, height = nodeH)
+                    .border(if (isSelected) 2.dp else 1.5.dp, borderCol, RoundedCornerShape(10.dp))
+                    .pointerInput(node.id) {
+                        detectTapGestures {
+                            onSelectNode(node.id)
+                        }
+                    }
+                    .pointerInput(node.id) {
+                        detectDragGestures(
+                            onDragStart = { onSelectNode(node.id) },
+                            onDragEnd = {
+                                onMoveNode(node.id, dragOffsetX, dragOffsetY, true)
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                dragOffsetX = (dragOffsetX + dragAmount.x).coerceIn(20f, 1800f)
+                                dragOffsetY = (dragOffsetY + dragAmount.y).coerceIn(20f, 1000f)
+                                onMoveNode(node.id, dragOffsetX, dragOffsetY, false)
+                            }
+                        )
+                    }
+                    .testTag("dag_node_2d_${node.id}")
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Surface(
+                                color = node.type.outputType.color.copy(alpha = 0.22f),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = "#${index + 1}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = node.type.outputType.color,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = node.type.titleIt,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (node.enabled) GraphiteNearWhite else GraphiteLightGray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Icon(
+                            imageVector = if (node.enabled) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                            contentDescription = null,
+                            tint = if (node.enabled) DataGraphic else GraphiteDimGray,
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clickable { onToggleEnabled(node.id) }
+                        )
+                    }
+
+                    Text(
+                        text = node.type.paramSpecs.joinToString(" • ") { spec ->
+                            val v = node.params[spec.key] ?: spec.defaultVal
+                            "${spec.labelIt.take(8)}: ${String.format(Locale.US, "%.0f", v)}"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = DataNumber,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Text(
+                        text = "Ordine X: ${dragOffsetX.toInt()}px (trascina X per ricablare)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = GraphiteLightGray,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        // 4. Output Compositor Node Block on 2D Board
+        Surface(
+            color = GraphitePanelBg,
+            shape = RoundedCornerShape(10.dp),
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .offset { IntOffset(outputPosPx.x.roundToInt(), outputPosPx.y.roundToInt()) }
+                .size(width = nodeW * 0.85f, height = nodeH)
+                .border(1.5.dp, DataArtboard, RoundedCornerShape(10.dp))
+        ) {
+            Column(
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.padding(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(CircleShape)
+                            .background(DataArtboard)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "Output Artboard",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = DataArtboard
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "$evaluatedCount istanze generate",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = GraphiteNearWhite
+                )
+                Text(
+                    text = "Blend: ${layer.blendMode.labelIt}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = GraphiteLightGray
+                )
+            }
+        }
+
+        // 5. Collapsible Bottom Docked Quick Parameter Inspector for the Selected 2D Node
+        if (activeNode != null) {
+            var inspectorExpanded by remember { mutableStateOf(true) }
+            Surface(
+                color = GraphitePanelBg.copy(alpha = 0.96f),
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                tonalElevation = 10.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .border(1.dp, DataGraphic.copy(alpha = 0.6f), RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                    .padding(bottom = 64.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { inspectorExpanded = !inspectorExpanded }
+                        ) {
+                            Icon(
+                                imageVector = if (inspectorExpanded) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
+                                contentDescription = "Espandi/Comprimi Ispettore",
+                                tint = DataGraphic,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "Ispettore Nodo 2D: ${activeNode.type.titleIt}",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = DataGraphic
+                            )
+                        }
+                        IconButton(
+                            onClick = { onDeleteNode(activeNode.id) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteOutline,
+                                contentDescription = "Elimina Nodo",
+                                tint = GraphiteErrorRed,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    if (inspectorExpanded) {
+                        for (spec in activeNode.type.paramSpecs) {
+                            val currentVal = activeNode.params[spec.key] ?: spec.defaultVal
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = spec.labelIt,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = GraphiteLightGray,
+                                    modifier = Modifier.width(120.dp),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Slider(
+                                    value = currentVal.coerceIn(spec.min, spec.max),
+                                    onValueChange = { onParamChange(activeNode.id, spec.key, it, false) },
+                                    onValueChangeFinished = { onParamChange(activeNode.id, spec.key, currentVal, true) },
+                                    valueRange = spec.min..spec.max,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = activeNode.type.outputType.color,
+                                        activeTrackColor = activeNode.type.outputType.color,
+                                        inactiveTrackColor = GraphiteDarkGray
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(26.dp)
+                                )
+                                Text(
+                                    text = "${String.format(Locale.US, "%.1f", currentVal)}${spec.unit}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = DataNumber,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(GraphiteDarkGray)
+                                        .clickable { onOpenMathInput(activeNode.id, spec, currentVal) }
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

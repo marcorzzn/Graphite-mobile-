@@ -8,8 +8,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +42,7 @@ import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Colorize
+import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FormatColorFill
@@ -51,9 +55,12 @@ import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LinearScale
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.OpenWith
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Polyline
 import androidx.compose.material.icons.filled.Rectangle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.SwapVert
@@ -64,14 +71,21 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,24 +96,28 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.engine.EvaluatedShapeInstance
 import com.example.engine.ProceduralEngine
+import com.example.model.GraphiteLayer
 import com.example.model.LayerGeometryKind
 import com.example.model.ToolType
 import com.example.model.Vec2Point
+import com.example.ui.theme.DataArtboard
 import com.example.ui.theme.DataGraphic
 import com.example.ui.theme.DataRaster
 import com.example.ui.theme.DataVector
@@ -111,8 +129,11 @@ import com.example.ui.theme.GraphiteNearBlack
 import com.example.ui.theme.GraphiteNearWhite
 import com.example.ui.theme.GraphitePanelBg
 import com.example.viewmodel.EditorUiState
+import com.example.viewmodel.GizmoHandleType
 import com.example.viewmodel.GraphiteViewModel
 import com.example.viewmodel.MobileWorkspaceTab
+import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
@@ -126,19 +147,42 @@ fun CanvasWorkspaceScreen(
     viewModel: GraphiteViewModel,
     modifier: Modifier = Modifier
 ) {
+    val currentUiState by rememberUpdatedState(uiState)
     val doc = uiState.document
     val selectedLayer = uiState.selectedLayer
 
-    // Interactive gesture states for shape creation & freehand drawing
+    // Interactive gesture states for shape creation, freehand drawing & gizmo handles
     var dragStartArtboard by remember { mutableStateOf<Offset?>(null) }
     var dragCurrentArtboard by remember { mutableStateOf<Offset?>(null) }
     val activeStrokePoints = remember { mutableStateListOf<Vec2Point>() }
     var draggingVertexIndex by remember { mutableStateOf<Int?>(null) }
+    var draggingBezierHandle by remember { mutableStateOf<Pair<Int, Boolean>?>(null) }
+    var activeGizmoHandle by remember { mutableStateOf<GizmoHandleType?>(null) }
+    var currentStylusPressure by remember { mutableFloatStateOf(1.0f) }
+
+    // Real-time Performance Telemetry metrics & Procedural Animation Clock
+    var lastEvalTimeMs by remember { mutableFloatStateOf(0.8f) }
+    var totalEvaluatedInstances by remember { mutableIntStateOf(0) }
+    var animTimeSec by remember { mutableFloatStateOf(0f) }
+    var draggingSplitCurtain by remember { mutableStateOf(false) }
+
+    LaunchedEffect(uiState.isPlayingAnimation) {
+        if (uiState.isPlayingAnimation) {
+            var lastNanos = withFrameNanos { it }
+            while (uiState.isPlayingAnimation) {
+                withFrameNanos { now ->
+                    val dt = ((now - lastNanos) / 1_000_000_000.0).toFloat().coerceIn(0f, 0.1f)
+                    lastNanos = now
+                    animTimeSec += dt
+                }
+            }
+        }
+    }
 
     // Canvas layout transform cache so pointer inputs map accurately to Artboard coordinates
-    var currentScale by remember { mutableStateOf(1f) }
-    var currentOriginX by remember { mutableStateOf(0f) }
-    var currentOriginY by remember { mutableStateOf(0f) }
+    var currentScale by remember { mutableFloatStateOf(1f) }
+    var currentOriginX by remember { mutableFloatStateOf(0f) }
+    var currentOriginY by remember { mutableFloatStateOf(0f) }
 
     fun screenToArtboard(screenOffset: Offset): Offset {
         val ax = (screenOffset.x - currentOriginX) / max(0.05f, currentScale)
@@ -146,133 +190,312 @@ fun CanvasWorkspaceScreen(
         return Offset(ax, ay)
     }
 
+    fun hitTestGizmoHandle(layer: GraphiteLayer, artPos: Offset, hitRadiusArtboard: Float): GizmoHandleType? {
+        if (!layer.visible || layer.locked) return null
+        // Inverse-rotate pointer into the layer's local Oriented Bounding Box (OBB) space
+        val dx = artPos.x - layer.x
+        val dy = artPos.y - layer.y
+        val rad = -Math.toRadians(layer.rotation.toDouble())
+        val cosA = cos(rad).toFloat()
+        val sinA = sin(rad).toFloat()
+        val localPos = Offset(
+            x = layer.x + dx * cosA - dy * sinA,
+            y = layer.y + dx * sinA + dy * cosA
+        )
+
+        val halfW = layer.width / 2f
+        val halfH = layer.height / 2f
+        val left = layer.x - halfW
+        val right = layer.x + halfW
+        val top = layer.y - halfH
+        val bottom = layer.y + halfH
+        val rotStemY = top - 42f / max(0.25f, currentScale / 0.5f).coerceIn(0.4f, 2.5f)
+
+        val candidates = listOf(
+            GizmoHandleType.ROTATE to Offset(layer.x, rotStemY),
+            GizmoHandleType.TOP_LEFT to Offset(left, top),
+            GizmoHandleType.TOP_RIGHT to Offset(right, top),
+            GizmoHandleType.BOTTOM_RIGHT to Offset(right, bottom),
+            GizmoHandleType.BOTTOM_LEFT to Offset(left, bottom),
+            GizmoHandleType.TOP_EDGE to Offset(layer.x, top),
+            GizmoHandleType.BOTTOM_EDGE to Offset(layer.x, bottom),
+            GizmoHandleType.LEFT_EDGE to Offset(left, layer.y),
+            GizmoHandleType.RIGHT_EDGE to Offset(right, layer.y)
+        )
+        return candidates.firstOrNull { (_, pos) ->
+            hypot(pos.x - localPos.x, pos.y - localPos.y) <= hitRadiusArtboard
+        }?.first
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(GraphiteNearBlack)
     ) {
-        // 1. Interactive 2D Viewport Canvas
+        // 1. Unified Multi-Touch (2-Finger Pinch/Pan + 2/3-Finger Undo/Redo) & 1-Finger/Stylus Canvas
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("graphite_2d_canvas")
-                .pointerInput(uiState.activeTool, uiState.selectedLayerId, uiState.zoom, uiState.panX, uiState.panY) {
-                    detectTapGestures(
-                        onTap = { tapPos ->
-                            val artPos = screenToArtboard(tapPos)
-                            viewModel.handleCanvasTap(artPos.x, artPos.y)
-                        },
-                        onDoubleTap = {
-                            viewModel.resetViewport()
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val firstDown = awaitFirstDown(requireUnconsumed = false)
+                        val downTime = System.currentTimeMillis()
+                        val startScreenPos = firstDown.position
+                        val startArtPos = screenToArtboard(startScreenPos)
+                        currentStylusPressure = firstDown.pressure.coerceIn(0.15f, 1.5f)
+
+                        var maxPointersSeen = 1
+                        var totalPanMovement = 0f
+                        var isSingleFingerDragging = false
+
+                        val stateAtStart = currentUiState
+                        val selLayerAtStart = stateAtStart.selectedLayer
+                        val hitRadiusArt = 34f / max(0.15f, currentScale)
+
+                        // Check if 1st finger grabbed the Before/After Split Curtain Divider
+                        if (stateAtStart.compareSplitMode) {
+                            val splitArtX = stateAtStart.document.artboardWidth * stateAtStart.compareSplitFraction
+                            if (abs(startArtPos.x - splitArtX) <= hitRadiusArt * 1.4f) {
+                                draggingSplitCurtain = true
+                            }
                         }
-                    )
-                }
-                .pointerInput(uiState.activeTool, uiState.selectedLayerId, uiState.zoom, uiState.panX, uiState.panY) {
-                    detectDragGestures(
-                        onDragStart = { startScreen ->
-                            val artPos = screenToArtboard(startScreen)
-                            when (uiState.activeTool) {
-                                ToolType.PATH, ToolType.PEN, ToolType.SPLINE -> {
-                                    val sel = uiState.selectedLayer
-                                    if (sel != null && sel.points.isNotEmpty()) {
-                                        val hitIdx = sel.points.indexOfFirst {
-                                            hypot(it.x - artPos.x, it.y - artPos.y) <= 44f
+
+                        // Check if 1st finger grabbed a Transform Cage Gizmo Handle, Cubic Bézier Tangent Handle, or Path Vertex
+                        if (!draggingSplitCurtain && stateAtStart.activeTool in listOf(ToolType.SELECT, ToolType.PATH, ToolType.PEN, ToolType.SPLINE) && selLayerAtStart != null) {
+                            if (selLayerAtStart.points.isNotEmpty()) {
+                                // 1. Hit-test Cubic Bézier Tangent Handles (handleIn / handleOut) first when visible
+                                if (selLayerAtStart.kind == LayerGeometryKind.BEZIER_PATH) {
+                                    var foundHandle: Pair<Int, Boolean>? = null
+                                    for (idx in selLayerAtStart.points.indices) {
+                                        val pt = selLayerAtStart.points[idx]
+                                        if (hypot(pt.handleOutX - startArtPos.x, pt.handleOutY - startArtPos.y) <= hitRadiusArt) {
+                                            foundHandle = idx to false
+                                            break
                                         }
-                                        draggingVertexIndex = if (hitIdx >= 0) hitIdx else null
+                                        if (hypot(pt.handleInX - startArtPos.x, pt.handleInY - startArtPos.y) <= hitRadiusArt) {
+                                            foundHandle = idx to true
+                                            break
+                                        }
                                     }
+                                    draggingBezierHandle = foundHandle
                                 }
+                                // 2. Hit-test Path Anchor Vertices
+                                if (draggingBezierHandle == null && (stateAtStart.activeTool in listOf(ToolType.PATH, ToolType.PEN, ToolType.SPLINE) || selLayerAtStart.kind == LayerGeometryKind.BEZIER_PATH)) {
+                                    val vIdx = selLayerAtStart.points.indexOfFirst {
+                                        hypot(it.x - startArtPos.x, it.y - startArtPos.y) <= hitRadiusArt
+                                    }
+                                    draggingVertexIndex = if (vIdx >= 0) vIdx else null
+                                }
+                            }
+                            if (draggingBezierHandle == null && draggingVertexIndex == null) {
+                                activeGizmoHandle = hitTestGizmoHandle(selLayerAtStart, startArtPos, hitRadiusArt)
+                            }
+                        }
+
+                        if (!draggingSplitCurtain && activeGizmoHandle == null && draggingVertexIndex == null && draggingBezierHandle == null) {
+                            when (stateAtStart.activeTool) {
                                 ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.POLYGON, ToolType.STAR, ToolType.LINE -> {
-                                    dragStartArtboard = artPos
-                                    dragCurrentArtboard = artPos
+                                    dragStartArtboard = startArtPos
+                                    dragCurrentArtboard = startArtPos
                                 }
                                 ToolType.FREEHAND, ToolType.BRUSH -> {
                                     activeStrokePoints.clear()
-                                    activeStrokePoints.add(Vec2Point(artPos.x, artPos.y))
-                                }
-                                else -> {}
-                            }
-                        },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            val artPos = screenToArtboard(change.position)
-                            val artDeltaX = dragAmount.x / max(0.05f, currentScale)
-                            val artDeltaY = dragAmount.y / max(0.05f, currentScale)
-
-                            when (uiState.activeTool) {
-                                ToolType.NAVIGATE -> {
-                                    viewModel.updateViewport(
-                                        zoom = uiState.zoom,
-                                        panX = uiState.panX + dragAmount.x,
-                                        panY = uiState.panY + dragAmount.y
+                                    activeStrokePoints.add(
+                                        Vec2Point(
+                                            x = startArtPos.x,
+                                            y = startArtPos.y,
+                                            pressure = currentStylusPressure
+                                        )
                                     )
                                 }
-                                ToolType.SELECT -> {
-                                    viewModel.moveSelectedLayerBy(artDeltaX, artDeltaY, isFinished = false)
-                                }
-                                ToolType.PATH, ToolType.PEN, ToolType.SPLINE -> {
-                                    val vIdx = draggingVertexIndex
-                                    if (vIdx != null) {
-                                        viewModel.movePathVertex(vIdx, artPos.x, artPos.y, isFinished = false)
-                                    } else {
-                                        viewModel.moveSelectedLayerBy(artDeltaX, artDeltaY, isFinished = false)
-                                    }
-                                }
-                                ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.POLYGON, ToolType.STAR, ToolType.LINE -> {
-                                    dragCurrentArtboard = artPos
-                                }
-                                ToolType.FREEHAND, ToolType.BRUSH -> {
-                                    val lastPt = activeStrokePoints.lastOrNull()
-                                    if (lastPt == null || hypot(artPos.x - lastPt.x, artPos.y - lastPt.y) >= 8f) {
-                                        activeStrokePoints.add(Vec2Point(artPos.x, artPos.y))
-                                    }
-                                }
-                                else -> {
-                                    viewModel.moveSelectedLayerBy(artDeltaX, artDeltaY, isFinished = false)
-                                }
-                            }
-                        },
-                        onDragEnd = {
-                            when (uiState.activeTool) {
-                                ToolType.SELECT -> {
-                                    viewModel.moveSelectedLayerBy(0f, 0f, isFinished = true)
-                                }
-                                ToolType.PATH, ToolType.PEN, ToolType.SPLINE -> {
-                                    val vIdx = draggingVertexIndex
-                                    val sel = uiState.selectedLayer
-                                    if (vIdx != null && sel != null && vIdx in sel.points.indices) {
-                                        val pt = sel.points[vIdx]
-                                        viewModel.movePathVertex(vIdx, pt.x, pt.y, isFinished = true)
-                                    }
-                                    draggingVertexIndex = null
-                                }
-                                ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.POLYGON, ToolType.STAR, ToolType.LINE -> {
-                                    val s = dragStartArtboard
-                                    val e = dragCurrentArtboard
-                                    if (s != null && e != null && hypot(e.x - s.x, e.y - s.y) > 16f) {
-                                        viewModel.createShapeFromDrag(s.x, s.y, e.x, e.y)
-                                    }
-                                    dragStartArtboard = null
-                                    dragCurrentArtboard = null
-                                }
-                                ToolType.FREEHAND, ToolType.BRUSH -> {
-                                    if (activeStrokePoints.size >= 2) {
-                                        viewModel.addFreehandOrBrushStroke(
-                                            points = activeStrokePoints.toList(),
-                                            isBrush = uiState.activeTool == ToolType.BRUSH
-                                        )
-                                    }
-                                    activeStrokePoints.clear()
-                                }
                                 else -> {}
                             }
-                        },
-                        onDragCancel = {
-                            dragStartArtboard = null
-                            dragCurrentArtboard = null
-                            activeStrokePoints.clear()
-                            draggingVertexIndex = null
                         }
-                    )
+
+                        var lastArtPos = startArtPos
+
+                        do {
+                            val event = awaitPointerEvent()
+                            val pressedChanges = event.changes.filter { it.pressed }
+                            val pointerCount = pressedChanges.size
+                            if (pointerCount > maxPointersSeen) {
+                                maxPointersSeen = pointerCount
+                            }
+
+                            if (pointerCount >= 2) {
+                                // Cancel any ongoing 1-finger draw/gizmo if a 2nd finger touches down
+                                dragStartArtboard = null
+                                dragCurrentArtboard = null
+                                activeStrokePoints.clear()
+                                activeGizmoHandle = null
+                                draggingVertexIndex = null
+                                draggingBezierHandle = null
+
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                totalPanMovement += hypot(panChange.x, panChange.y)
+
+                                if (abs(zoomChange - 1f) > 0.005f || hypot(panChange.x, panChange.y) > 1.5f) {
+                                    val st = currentUiState
+                                    viewModel.updateViewport(
+                                        zoom = st.zoom * zoomChange,
+                                        panX = st.panX + panChange.x,
+                                        panY = st.panY + panChange.y
+                                    )
+                                }
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            } else if (pointerCount == 1 && maxPointersSeen == 1) {
+                                val change = pressedChanges.first()
+                                currentStylusPressure = change.pressure.coerceIn(0.15f, 1.5f)
+                                val screenDelta = change.position - change.previousPosition
+                                val screenDist = hypot(change.position.x - startScreenPos.x, change.position.y - startScreenPos.y)
+                                if (screenDist > 10f) {
+                                    isSingleFingerDragging = true
+                                }
+
+                                if (isSingleFingerDragging) {
+                                    val artPos = screenToArtboard(change.position)
+                                    val artDeltaX = artPos.x - lastArtPos.x
+                                    val artDeltaY = artPos.y - lastArtPos.y
+                                    lastArtPos = artPos
+                                    change.consume()
+
+                                    val gHandle = activeGizmoHandle
+                                    val bHandle = draggingBezierHandle
+                                    val vIdx = draggingVertexIndex
+
+                                    if (draggingSplitCurtain) {
+                                        val frac = artPos.x / max(1f, currentUiState.document.artboardWidth.toFloat())
+                                        viewModel.updateCompareSplitFraction(frac)
+                                    } else if (bHandle != null) {
+                                        viewModel.moveBezierHandle(
+                                            pointIndex = bHandle.first,
+                                            isHandleIn = bHandle.second,
+                                            newX = artPos.x,
+                                            newY = artPos.y,
+                                            isFinished = false
+                                        )
+                                    } else if (gHandle != null) {
+                                        viewModel.transformSelectedLayerViaGizmo(
+                                            handle = gHandle,
+                                            artboardX = artPos.x,
+                                            artboardY = artPos.y,
+                                            deltaX = artDeltaX,
+                                            deltaY = artDeltaY,
+                                            isFinished = false
+                                        )
+                                    } else if (vIdx != null) {
+                                        viewModel.movePathVertex(vIdx, artPos.x, artPos.y, isFinished = false)
+                                    } else {
+                                        val st = currentUiState
+                                        when (st.activeTool) {
+                                            ToolType.NAVIGATE -> {
+                                                viewModel.updateViewport(
+                                                    zoom = st.zoom,
+                                                    panX = st.panX + screenDelta.x,
+                                                    panY = st.panY + screenDelta.y
+                                                )
+                                            }
+                                            ToolType.SELECT, ToolType.PATH -> {
+                                                viewModel.moveSelectedLayerBy(artDeltaX, artDeltaY, isFinished = false)
+                                            }
+                                            ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.POLYGON, ToolType.STAR, ToolType.LINE -> {
+                                                dragCurrentArtboard = artPos
+                                            }
+                                            ToolType.FREEHAND, ToolType.BRUSH -> {
+                                                val lastPt = activeStrokePoints.lastOrNull()
+                                                if (lastPt == null || hypot(artPos.x - lastPt.x, artPos.y - lastPt.y) >= 7f) {
+                                                    activeStrokePoints.add(
+                                                        Vec2Point(
+                                                            x = artPos.x,
+                                                            y = artPos.y,
+                                                            pressure = currentStylusPressure
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                            else -> {
+                                                viewModel.moveSelectedLayerBy(artDeltaX, artDeltaY, isFinished = false)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
+
+                        val elapsedMs = System.currentTimeMillis() - downTime
+
+                        // Handle 2-Finger Tap (Undo) and 3-Finger Tap (Redo)
+                        if (maxPointersSeen == 2 && elapsedMs < 280L && totalPanMovement < 28f) {
+                            viewModel.undo(fromGesture = true)
+                        } else if (maxPointersSeen >= 3 && elapsedMs < 320L && totalPanMovement < 36f) {
+                            viewModel.redo(fromGesture = true)
+                        } else if (maxPointersSeen == 1) {
+                            val gHandle = activeGizmoHandle
+                            val bHandle = draggingBezierHandle
+                            val vIdx = draggingVertexIndex
+
+                            if (!isSingleFingerDragging) {
+                                // Clean 1-finger tap on canvas
+                                viewModel.handleCanvasTap(startArtPos.x, startArtPos.y)
+                            } else if (bHandle != null) {
+                                viewModel.moveBezierHandle(
+                                    pointIndex = bHandle.first,
+                                    isHandleIn = bHandle.second,
+                                    newX = lastArtPos.x,
+                                    newY = lastArtPos.y,
+                                    isFinished = true
+                                )
+                            } else if (gHandle != null) {
+                                viewModel.transformSelectedLayerViaGizmo(
+                                    handle = gHandle,
+                                    artboardX = lastArtPos.x,
+                                    artboardY = lastArtPos.y,
+                                    deltaX = 0f,
+                                    deltaY = 0f,
+                                    isFinished = true
+                                )
+                            } else if (vIdx != null) {
+                                val sel = currentUiState.selectedLayer
+                                if (sel != null && vIdx in sel.points.indices) {
+                                    val pt = sel.points[vIdx]
+                                    viewModel.movePathVertex(vIdx, pt.x, pt.y, isFinished = true)
+                                }
+                            } else {
+                                val st = currentUiState
+                                when (st.activeTool) {
+                                    ToolType.SELECT, ToolType.PATH -> {
+                                        viewModel.moveSelectedLayerBy(0f, 0f, isFinished = true)
+                                    }
+                                    ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.POLYGON, ToolType.STAR, ToolType.LINE -> {
+                                        val s = dragStartArtboard
+                                        val e = dragCurrentArtboard
+                                        if (s != null && e != null && hypot(e.x - s.x, e.y - s.y) > 16f) {
+                                            viewModel.createShapeFromDrag(s.x, s.y, e.x, e.y)
+                                        }
+                                    }
+                                    ToolType.FREEHAND, ToolType.BRUSH -> {
+                                        if (activeStrokePoints.size >= 2) {
+                                            viewModel.addFreehandOrBrushStroke(
+                                                points = activeStrokePoints.toList(),
+                                                isBrush = st.activeTool == ToolType.BRUSH
+                                            )
+                                        }
+                                    }
+                                    else -> {}
+                                }
+                            }
+                        }
+
+                        dragStartArtboard = null
+                        dragCurrentArtboard = null
+                        activeStrokePoints.clear()
+                        activeGizmoHandle = null
+                        draggingVertexIndex = null
+                        draggingBezierHandle = null
+                        draggingSplitCurtain = false
+                    }
                 }
         ) {
             val availW = size.width - 32.dp.toPx()
@@ -288,6 +511,9 @@ fun CanvasWorkspaceScreen(
             currentScale = totalScale
             currentOriginX = originX
             currentOriginY = originY
+
+            val t0 = System.nanoTime()
+            var instanceCounter = 0
 
             withTransform({
                 translate(left = originX, top = originY)
@@ -332,81 +558,248 @@ fun CanvasWorkspaceScreen(
                 }
 
                 // Render all visible layers through the non-destructive ProceduralEngine
-                for (layer in doc.layers) {
-                    val evaluatedInstances = ProceduralEngine.evaluateLayer(layer)
-                    for (inst in evaluatedInstances) {
-                        drawEvaluatedInstance(
-                            inst = inst,
-                            wireframeOnly = uiState.wireframeOverlay,
-                            invScale = 1f / totalScale
+                val currentAnimSec = if (uiState.isPlayingAnimation) animTimeSec else 0f
+
+                if (uiState.compareSplitMode) {
+                    val splitX = doc.artboardWidth * uiState.compareSplitFraction
+                    // Left Side: PRIMA (Raw Base Geometry without Procedural Nodes)
+                    clipRect(
+                        left = 0f,
+                        top = 0f,
+                        right = splitX,
+                        bottom = doc.artboardHeight.toFloat()
+                    ) {
+                        for (layer in doc.layers) {
+                            val baseInstances = ProceduralEngine.evaluateLayer(
+                                layer = layer,
+                                timeSec = currentAnimSec,
+                                bypassNodes = true
+                            )
+                            for (inst in baseInstances) {
+                                drawEvaluatedInstance(
+                                    inst = inst,
+                                    wireframeOnly = uiState.wireframeOverlay,
+                                    invScale = 1f / totalScale
+                                )
+                            }
+                        }
+                    }
+
+                    // Right Side: DOPO (Full Procedural Node Graph Evaluation)
+                    clipRect(
+                        left = splitX,
+                        top = 0f,
+                        right = doc.artboardWidth.toFloat(),
+                        bottom = doc.artboardHeight.toFloat()
+                    ) {
+                        for (layer in doc.layers) {
+                            val evaluatedInstances = ProceduralEngine.evaluateLayer(
+                                layer = layer,
+                                timeSec = currentAnimSec,
+                                bypassNodes = false
+                            )
+                            instanceCounter += evaluatedInstances.size
+                            for (inst in evaluatedInstances) {
+                                drawEvaluatedInstance(
+                                    inst = inst,
+                                    wireframeOnly = uiState.wireframeOverlay,
+                                    invScale = 1f / totalScale
+                                )
+                            }
+                        }
+                    }
+
+                    // Vertical Split Curtain Line + Knob
+                    val lineStroke = 3f / totalScale
+                    drawLine(
+                        color = DataGraphic,
+                        start = Offset(splitX, 0f),
+                        end = Offset(splitX, doc.artboardHeight.toFloat()),
+                        strokeWidth = lineStroke
+                    )
+                    val handleCenter = Offset(splitX, doc.artboardHeight * 0.5f)
+                    val knobR = 18f / totalScale
+                    drawCircle(
+                        color = DataGraphic,
+                        radius = knobR,
+                        center = handleCenter
+                    )
+                    drawCircle(
+                        color = GraphiteNearBlack,
+                        radius = knobR * 0.55f,
+                        center = handleCenter
+                    )
+                } else {
+                    for (layer in doc.layers) {
+                        val evaluatedInstances = ProceduralEngine.evaluateLayer(
+                            layer = layer,
+                            timeSec = currentAnimSec,
+                            bypassNodes = false
                         )
+                        instanceCounter += evaluatedInstances.size
+                        for (inst in evaluatedInstances) {
+                            drawEvaluatedInstance(
+                                inst = inst,
+                                wireframeOnly = uiState.wireframeOverlay,
+                                invScale = 1f / totalScale
+                            )
+                        }
                     }
                 }
 
-                // Selection Cage & Node/Path Gizmos for the active layer
+                // Oriented Bounding Box (OBB) Selection Cage & Interactive 9-Handle Transform Gizmo
                 selectedLayer?.let { sel ->
                     if (sel.visible) {
                         val halfW = sel.width / 2f
                         val halfH = sel.height / 2f
-                        val topLeft = Offset(sel.x - halfW, sel.y - halfH)
+                        val left = sel.x - halfW
+                        val right = sel.x + halfW
+                        val top = sel.y - halfH
+                        val bottom = sel.y + halfH
                         val strokePx = 2f / totalScale
 
-                        drawRect(
-                            color = DataVector,
-                            topLeft = topLeft,
-                            size = Size(sel.width, sel.height),
-                            style = Stroke(
-                                width = strokePx,
-                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f / totalScale, 8f / totalScale))
-                            )
-                        )
-
-                        // Corner resize/transform handles
-                        val handleRadius = 7f / totalScale
-                        val corners = listOf(
-                            Offset(sel.x - halfW, sel.y - halfH),
-                            Offset(sel.x + halfW, sel.y - halfH),
-                            Offset(sel.x + halfW, sel.y + halfH),
-                            Offset(sel.x - halfW, sel.y + halfH)
-                        )
-                        for (c in corners) {
-                            drawCircle(color = GraphiteNearWhite, radius = handleRadius, center = c)
-                            drawCircle(
+                        withTransform({
+                            if (abs(sel.rotation) > 0.01f) {
+                                rotate(degrees = sel.rotation, pivot = Offset(sel.x, sel.y))
+                            }
+                        }) {
+                            drawRect(
                                 color = DataVector,
-                                radius = handleRadius,
-                                center = c,
-                                style = Stroke(width = 2f / totalScale)
+                                topLeft = Offset(left, top),
+                                size = Size(sel.width, sel.height),
+                                style = Stroke(
+                                    width = strokePx,
+                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f / totalScale, 8f / totalScale))
+                                )
+                            )
+
+                            // Top Rotation Handle Stem & Knob
+                            val stemOffset = 42f / max(0.4f, min(2.5f, totalScale / 0.5f))
+                            val rotKnobPos = Offset(sel.x, top - stemOffset)
+                            drawLine(
+                                color = DataGraphic,
+                                start = Offset(sel.x, top),
+                                end = rotKnobPos,
+                                strokeWidth = 2.2f / totalScale
+                            )
+                            val isRotating = activeGizmoHandle == GizmoHandleType.ROTATE
+                            val rotKnobR = (if (isRotating) 12f else 9f) / totalScale
+                            drawCircle(
+                                color = if (isRotating) DataRaster else DataGraphic,
+                                radius = rotKnobR,
+                                center = rotKnobPos
+                            )
+                            drawCircle(
+                                color = GraphiteNearBlack,
+                                radius = rotKnobR * 0.4f,
+                                center = rotKnobPos
+                            )
+
+                            // 4 Corner Resize Handles
+                            val cornerRadius = 8.5f / totalScale
+                            val corners = listOf(
+                                GizmoHandleType.TOP_LEFT to Offset(left, top),
+                                GizmoHandleType.TOP_RIGHT to Offset(right, top),
+                                GizmoHandleType.BOTTOM_RIGHT to Offset(right, bottom),
+                                GizmoHandleType.BOTTOM_LEFT to Offset(left, bottom)
+                            )
+                            for ((hType, cPos) in corners) {
+                                val isActive = activeGizmoHandle == hType
+                                val r = if (isActive) cornerRadius * 1.35f else cornerRadius
+                                drawCircle(
+                                    color = if (isActive) DataRaster else GraphiteNearWhite,
+                                    radius = r,
+                                    center = cPos
+                                )
+                                drawCircle(
+                                    color = DataVector,
+                                    radius = r,
+                                    center = cPos,
+                                    style = Stroke(width = 2.2f / totalScale)
+                                )
+                            }
+
+                            // 4 Edge Pill Handles
+                            val edgeRadius = 6.5f / totalScale
+                            val edges = listOf(
+                                GizmoHandleType.TOP_EDGE to Offset(sel.x, top),
+                                GizmoHandleType.BOTTOM_EDGE to Offset(sel.x, bottom),
+                                GizmoHandleType.LEFT_EDGE to Offset(left, sel.y),
+                                GizmoHandleType.RIGHT_EDGE to Offset(right, sel.y)
+                            )
+                            for ((hType, ePos) in edges) {
+                                val isActive = activeGizmoHandle == hType
+                                drawCircle(
+                                    color = if (isActive) DataRaster else DataVector,
+                                    radius = if (isActive) edgeRadius * 1.3f else edgeRadius,
+                                    center = ePos
+                                )
+                            }
+
+                            // Center Pivot Cross
+                            val crossR = 9f / totalScale
+                            drawLine(
+                                color = DataGraphic,
+                                start = Offset(sel.x - crossR, sel.y),
+                                end = Offset(sel.x + crossR, sel.y),
+                                strokeWidth = 2f / totalScale
+                            )
+                            drawLine(
+                                color = DataGraphic,
+                                start = Offset(sel.x, sel.y - crossR),
+                                end = Offset(sel.x, sel.y + crossR),
+                                strokeWidth = 2f / totalScale
                             )
                         }
 
-                        // Center Pivot Cross
-                        val crossR = 9f / totalScale
-                        drawLine(
-                            color = DataGraphic,
-                            start = Offset(sel.x - crossR, sel.y),
-                            end = Offset(sel.x + crossR, sel.y),
-                            strokeWidth = 2f / totalScale
-                        )
-                        drawLine(
-                            color = DataGraphic,
-                            start = Offset(sel.x, sel.y - crossR),
-                            end = Offset(sel.x, sel.y + crossR),
-                            strokeWidth = 2f / totalScale
-                        )
-
-                        // Path / Spline Anchor Handles
+                        // Path / Cubic Bézier / Spline Anchor Handles & C1 Tangent Antennae
                         if (sel.points.isNotEmpty()) {
                             for (i in 0 until sel.points.size - 1) {
                                 val p0 = sel.points[i]
                                 val p1 = sel.points[i + 1]
                                 drawLine(
-                                    color = DataVector.copy(alpha = 0.7f),
+                                    color = DataVector.copy(alpha = 0.45f),
                                     start = Offset(p0.x, p0.y),
                                     end = Offset(p1.x, p1.y),
-                                    strokeWidth = 1.5f / totalScale
+                                    strokeWidth = 1.2f / totalScale,
+                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f / totalScale, 6f / totalScale))
                                 )
                             }
                             sel.points.forEachIndexed { idx, pt ->
+                                // Draw Cubic Bézier Tangent Antennae (handleIn & handleOut) when BEZIER_PATH
+                                if (sel.kind == LayerGeometryKind.BEZIER_PATH) {
+                                    val tR = 6.5f / totalScale
+                                    val isDraggingIn = draggingBezierHandle == (idx to true)
+                                    val isDraggingOut = draggingBezierHandle == (idx to false)
+
+                                    if (hypot(pt.handleInX - pt.x, pt.handleInY - pt.y) > 1f) {
+                                        drawLine(
+                                            color = DataGraphic.copy(alpha = 0.85f),
+                                            start = Offset(pt.x, pt.y),
+                                            end = Offset(pt.handleInX, pt.handleInY),
+                                            strokeWidth = 1.8f / totalScale
+                                        )
+                                        drawCircle(
+                                            color = if (isDraggingIn) DataRaster else DataGraphic,
+                                            radius = if (isDraggingIn) tR * 1.35f else tR,
+                                            center = Offset(pt.handleInX, pt.handleInY)
+                                        )
+                                    }
+                                    if (hypot(pt.handleOutX - pt.x, pt.handleOutY - pt.y) > 1f) {
+                                        drawLine(
+                                            color = DataGraphic.copy(alpha = 0.85f),
+                                            start = Offset(pt.x, pt.y),
+                                            end = Offset(pt.handleOutX, pt.handleOutY),
+                                            strokeWidth = 1.8f / totalScale
+                                        )
+                                        drawCircle(
+                                            color = if (isDraggingOut) DataRaster else DataGraphic,
+                                            radius = if (isDraggingOut) tR * 1.35f else tR,
+                                            center = Offset(pt.handleOutX, pt.handleOutY)
+                                        )
+                                    }
+                                }
+
                                 val isDragged = idx == draggingVertexIndex
                                 val r = (if (isDragged) 11f else 8f) / totalScale
                                 drawCircle(
@@ -430,8 +823,8 @@ fun CanvasWorkspaceScreen(
                 if (sPos != null && ePos != null) {
                     val left = min(sPos.x, ePos.x)
                     val top = min(sPos.y, ePos.y)
-                    val w = max(8f, kotlin.math.abs(ePos.x - sPos.x))
-                    val h = max(8f, kotlin.math.abs(ePos.y - sPos.y))
+                    val w = max(8f, abs(ePos.x - sPos.x))
+                    val h = max(8f, abs(ePos.y - sPos.y))
                     drawRect(
                         color = Color(uiState.primaryColorHex.toInt()).copy(alpha = 0.35f),
                         topLeft = Offset(left, top),
@@ -445,22 +838,22 @@ fun CanvasWorkspaceScreen(
                     )
                 }
 
-                // Live Freehand / Brush Stroke Preview
+                // Live Freehand / Variable-Width Brush Stroke Preview with Per-Segment Stylus Pressure
                 if (activeStrokePoints.size >= 2) {
-                    val strokePath = Path()
-                    strokePath.moveTo(activeStrokePoints.first().x, activeStrokePoints.first().y)
+                    val baseW = if (uiState.activeTool == ToolType.BRUSH) 16f else 5f
+                    val strokeCol = Color(uiState.primaryColorHex.toInt())
                     for (i in 1 until activeStrokePoints.size) {
-                        strokePath.lineTo(activeStrokePoints[i].x, activeStrokePoints[i].y)
-                    }
-                    drawPath(
-                        path = strokePath,
-                        color = Color(uiState.primaryColorHex.toInt()),
-                        style = Stroke(
-                            width = if (uiState.activeTool == ToolType.BRUSH) 18f else 5f,
-                            cap = StrokeCap.Round,
-                            join = StrokeJoin.Round
+                        val p0 = activeStrokePoints[i - 1]
+                        val p1 = activeStrokePoints[i]
+                        val segPressure = ((p0.pressure + p1.pressure) * 0.5f).coerceIn(0.2f, 1.8f)
+                        drawLine(
+                            color = strokeCol,
+                            start = Offset(p0.x, p0.y),
+                            end = Offset(p1.x, p1.y),
+                            strokeWidth = baseW * segPressure,
+                            cap = StrokeCap.Round
                         )
-                    )
+                    }
                 }
 
                 // Artboard border outline
@@ -471,6 +864,10 @@ fun CanvasWorkspaceScreen(
                     style = Stroke(width = 1.5f / totalScale)
                 )
             }
+
+            val elapsedMs = ((System.nanoTime() - t0) / 1_000_000.0).toFloat()
+            lastEvalTimeMs = (lastEvalTimeMs * 0.7f + elapsedMs * 0.3f).coerceAtLeast(0.1f)
+            totalEvaluatedInstances = instanceCounter
 
             // Optional Top & Left Rulers (Graphite RulerInput style)
             if (uiState.showRulers) {
@@ -494,7 +891,7 @@ fun CanvasWorkspaceScreen(
             }
         }
 
-        // 2. Top Floating Context Pill Bar (Document, Undo/Redo, Zoom, Snap, Grid, Export)
+        // 2. Top Floating Context Pill Bar (Document, Undo/Redo, Zoom, Snap, Grid, Perf HUD, Export)
         TopCanvasControlPill(
             uiState = uiState,
             viewModel = viewModel,
@@ -503,14 +900,34 @@ fun CanvasWorkspaceScreen(
                 .padding(top = 12.dp, start = 10.dp, end = 10.dp)
         )
 
-        // 3. Toast / Hint Banner
+        // 3. Real-Time Graphene Performance & Telemetry HUD Overlay
+        AnimatedVisibility(
+            visible = uiState.showPerformanceHud,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = 72.dp, start = 12.dp)
+        ) {
+            PerformanceTelemetryHudCard(
+                evalTimeMs = lastEvalTimeMs,
+                instanceCount = totalEvaluatedInstances,
+                layerCount = doc.layers.size,
+                nodeCount = doc.layers.sumOf { it.nodes.count { n -> n.enabled } },
+                stylusPressure = currentStylusPressure,
+                onRunStressTest = { viewModel.applyProceduralPresetRecipe("stress_benchmark") },
+                onClose = { viewModel.togglePerformanceHud() }
+            )
+        }
+
+        // 4. Toast / Hint Banner
         AnimatedVisibility(
             visible = uiState.statusToast != null,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 68.dp, start = 16.dp, end = 16.dp)
+                .padding(top = if (uiState.showPerformanceHud) 172.dp else 68.dp, start = 16.dp, end = 16.dp)
         ) {
             Surface(
                 color = GraphiteMildBlack.copy(alpha = 0.95f),
@@ -542,7 +959,7 @@ fun CanvasWorkspaceScreen(
             }
         }
 
-        // 4. Bottom Dock: Selected Layer Node Strip + Working Colors + Scrollable Tool Groups
+        // 5. Bottom Dock: Split Comparison Slider (if active) + Selected Layer Node Strip + Working Colors + Tool Dock
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -550,17 +967,143 @@ fun CanvasWorkspaceScreen(
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Selected Layer & Working Colors Quick Bar
+            if (uiState.compareSplitMode) {
+                Surface(
+                    color = GraphiteNearBlack.copy(alpha = 0.94f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, DataGraphic, RoundedCornerShape(12.dp))
+                        .testTag("compare_split_banner")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "PRIMA (Base)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DataVector
+                        )
+                        Slider(
+                            value = uiState.compareSplitFraction,
+                            onValueChange = { viewModel.updateCompareSplitFraction(it) },
+                            valueRange = 0.08f..0.92f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = DataGraphic,
+                                activeTrackColor = DataVector,
+                                inactiveTrackColor = DataGraphic
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp)
+                                .height(28.dp)
+                        )
+                        Text(
+                            text = "DOPO (Grafo)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DataGraphic
+                        )
+                    }
+                }
+            }
+
             QuickLayerAndColorsBar(
                 uiState = uiState,
                 viewModel = viewModel
             )
 
-            // Grouped Mobile Tool Dock
             MobileToolDock(
                 activeTool = uiState.activeTool,
                 onSelectTool = { viewModel.selectTool(it) }
             )
+        }
+    }
+}
+
+@Composable
+private fun PerformanceTelemetryHudCard(
+    evalTimeMs: Float,
+    instanceCount: Int,
+    layerCount: Int,
+    nodeCount: Int,
+    stylusPressure: Float,
+    onRunStressTest: () -> Unit,
+    onClose: () -> Unit
+) {
+    Surface(
+        color = GraphiteNearBlack.copy(alpha = 0.92f),
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 8.dp,
+        modifier = Modifier
+            .border(1.dp, DataGraphic.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+            .testTag("performance_telemetry_hud")
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (evalTimeMs < 8.3f) DataGraphic else DataRaster)
+                )
+                Text(
+                    text = "GRAPHENE DAG TELEMETRY (120Hz Target)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DataGraphic
+                )
+                Text(
+                    text = "✕",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = GraphiteLightGray,
+                    modifier = Modifier.clickable { onClose() }
+                )
+            }
+            Text(
+                text = String.format(
+                    Locale.US,
+                    "DAG Eval: %.2f ms/frame • Istanze: %d • Nodi: %d • Livelli: %d",
+                    evalTimeMs,
+                    instanceCount,
+                    nodeCount,
+                    layerCount
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = GraphiteNearWhite
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Pressione Stilo/Touch: ${(stylusPressure * 100).roundToInt()}% • Multi-Touch 2/3 Dita Attivo",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DataArtboard
+                )
+                Surface(
+                    color = DataVector.copy(alpha = 0.22f),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier
+                        .border(1.dp, DataVector, RoundedCornerShape(6.dp))
+                        .clickable { onRunStressTest() }
+                        .testTag("run_stress_test_button")
+                ) {
+                    Text(
+                        text = "Stress Benchmark 48×",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = DataVector,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -731,6 +1274,48 @@ private fun TopCanvasControlPill(
                 )
             }
 
+            // Live Procedural Animation Play / Pause Toggle (60fps)
+            IconButton(
+                onClick = { viewModel.togglePlayAnimation() },
+                modifier = Modifier
+                    .size(40.dp)
+                    .testTag("play_animation_button")
+            ) {
+                Icon(
+                    imageVector = if (uiState.isPlayingAnimation) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = "Animazione Procedurale Live",
+                    tint = if (uiState.isPlayingAnimation) DataGraphic else GraphiteNearWhite
+                )
+            }
+
+            // Before / After Split-Screen Comparison Curtain Toggle
+            IconButton(
+                onClick = { viewModel.toggleCompareSplitMode() },
+                modifier = Modifier
+                    .size(40.dp)
+                    .testTag("compare_split_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Compare,
+                    contentDescription = "Confronto Prima/Dopo",
+                    tint = if (uiState.compareSplitMode) DataGraphic else GraphiteLightGray
+                )
+            }
+
+            // Performance / Benchmark Telemetry HUD Toggle
+            IconButton(
+                onClick = { viewModel.togglePerformanceHud() },
+                modifier = Modifier
+                    .size(40.dp)
+                    .testTag("perf_hud_toggle_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Speed,
+                    contentDescription = "Telemetria Performance",
+                    tint = if (uiState.showPerformanceHud) DataGraphic else GraphiteLightGray
+                )
+            }
+
             // Export SVG / PNG / Graphite Button
             IconButton(
                 onClick = { viewModel.setExportDialogVisible(true) },
@@ -828,7 +1413,7 @@ private fun QuickLayerAndColorsBar(
                         onClick = { viewModel.selectTab(MobileWorkspaceTab.LAYERS_INSPECTOR) },
                         label = {
                             Text(
-                                text = selectedLayer.name,
+                                text = "${selectedLayer.name} (${selectedLayer.width.roundToInt()}×${selectedLayer.height.roundToInt()} • ${selectedLayer.rotation.roundToInt()}°)",
                                 style = MaterialTheme.typography.labelLarge,
                                 maxLines = 1
                             )
@@ -1059,20 +1644,37 @@ private fun DrawScope.drawEvaluatedInstance(
         // Stroke (or Wireframe outline)
         val strokeW = if (wireframeOnly) max(2f * invScale, 1.5f) else inst.strokeWidth
         if (strokeW > 0.1f && inst.kind != LayerGeometryKind.TEXT) {
-            val dashEffect = if (inst.dashLen > 0f && inst.dashGap > 0f) {
-                PathEffect.dashPathEffect(floatArrayOf(inst.dashLen, inst.dashGap), inst.dashPhase)
-            } else null
+            if (!wireframeOnly && inst.kind == LayerGeometryKind.BRUSH_STROKE && inst.points.size >= 2 && inst.dashLen <= 0f) {
+                // Variable-width stylus pressure brush rendering per segment
+                val strokeCol = Color(inst.strokeColorHex.toInt()).copy(alpha = inst.opacity)
+                for (i in 1 until inst.points.size) {
+                    val p0 = inst.points[i - 1]
+                    val p1 = inst.points[i]
+                    val segPressure = ((p0.pressure + p1.pressure) * 0.5f).coerceIn(0.2f, 1.8f)
+                    drawLine(
+                        color = strokeCol,
+                        start = Offset(p0.x, p0.y),
+                        end = Offset(p1.x, p1.y),
+                        strokeWidth = strokeW * segPressure,
+                        cap = StrokeCap.Round
+                    )
+                }
+            } else {
+                val dashEffect = if (inst.dashLen > 0f && inst.dashGap > 0f) {
+                    PathEffect.dashPathEffect(floatArrayOf(inst.dashLen, inst.dashGap), inst.dashPhase)
+                } else null
 
-            drawPath(
-                path = path,
-                color = if (wireframeOnly) DataVector else Color(inst.strokeColorHex.toInt()).copy(alpha = inst.opacity),
-                style = Stroke(
-                    width = strokeW,
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round,
-                    pathEffect = dashEffect
+                drawPath(
+                    path = path,
+                    color = if (wireframeOnly) DataVector else Color(inst.strokeColorHex.toInt()).copy(alpha = inst.opacity),
+                    style = Stroke(
+                        width = strokeW,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = dashEffect
+                    )
                 )
-            )
+            }
         }
     }
 }
@@ -1124,7 +1726,27 @@ private fun buildComposePath(inst: EvaluatedShapeInstance): Path {
             }
             path.close()
         }
-        LayerGeometryKind.LINE, LayerGeometryKind.BEZIER_PATH, LayerGeometryKind.FREEHAND, LayerGeometryKind.SPLINE, LayerGeometryKind.BRUSH_STROKE -> {
+        LayerGeometryKind.BEZIER_PATH -> {
+            if (inst.points.size >= 2) {
+                path.moveTo(inst.points.first().x, inst.points.first().y)
+                for (i in 1 until inst.points.size) {
+                    val prev = inst.points[i - 1]
+                    val curr = inst.points[i]
+                    path.cubicTo(
+                        prev.handleOutX,
+                        prev.handleOutY,
+                        curr.handleInX,
+                        curr.handleInY,
+                        curr.x,
+                        curr.y
+                    )
+                }
+            } else {
+                path.moveTo(inst.centerX - inst.width / 2f, inst.centerY)
+                path.lineTo(inst.centerX + inst.width / 2f, inst.centerY)
+            }
+        }
+        LayerGeometryKind.LINE, LayerGeometryKind.FREEHAND, LayerGeometryKind.SPLINE, LayerGeometryKind.BRUSH_STROKE -> {
             if (inst.points.size >= 2) {
                 path.moveTo(inst.points.first().x, inst.points.first().y)
                 for (i in 1 until inst.points.size) {
@@ -1148,5 +1770,63 @@ private fun buildComposePath(inst: EvaluatedShapeInstance): Path {
         }
         LayerGeometryKind.TEXT -> {}
     }
+
+    // Apply non-destructive Skia Boolean Path Operation in Compose if present
+    val boolOp = inst.booleanOp
+    if (boolOp != null) {
+        val isClosedShape = inst.kind in listOf(
+            LayerGeometryKind.RECTANGLE,
+            LayerGeometryKind.ELLIPSE,
+            LayerGeometryKind.POLYGON,
+            LayerGeometryKind.STAR
+        )
+        if (isClosedShape) {
+            val cutterPath = Path()
+            val cx = inst.centerX + boolOp.offsetX
+            val cy = inst.centerY + boolOp.offsetY
+            val cw = max(12f, inst.width * boolOp.scaleRatio)
+            val ch = max(12f, inst.height * boolOp.scaleRatio)
+            when (boolOp.cutterShape) {
+                0 -> {
+                    cutterPath.addOval(
+                        androidx.compose.ui.geometry.Rect(
+                            left = cx - cw / 2f,
+                            top = cy - ch / 2f,
+                            right = cx + cw / 2f,
+                            bottom = cy + ch / 2f
+                        )
+                    )
+                }
+                1 -> {
+                    cutterPath.addRoundRect(
+                        androidx.compose.ui.geometry.RoundRect(
+                            left = cx - cw / 2f,
+                            top = cy - ch / 2f,
+                            right = cx + cw / 2f,
+                            bottom = cy + ch / 2f,
+                            cornerRadius = CornerRadius(cw * 0.15f, ch * 0.15f)
+                        )
+                    )
+                }
+                else -> {
+                    cutterPath.moveTo(cx, cy - ch / 2f)
+                    cutterPath.lineTo(cx + cw / 2f, cy)
+                    cutterPath.lineTo(cx, cy + ch / 2f)
+                    cutterPath.lineTo(cx - cw / 2f, cy)
+                    cutterPath.close()
+                }
+            }
+            val op = when (boolOp.opMode) {
+                0 -> PathOperation.Difference
+                1 -> PathOperation.Union
+                2 -> PathOperation.Intersect
+                else -> PathOperation.Xor
+            }
+            val combined = Path()
+            combined.op(path, cutterPath, op)
+            return combined
+        }
+    }
+
     return path
 }
