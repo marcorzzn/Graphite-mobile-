@@ -5,19 +5,11 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.GraphiteRepository
 import com.example.engine.DemoArtworkFactory
+import com.example.engine.GraphiteGuideEngine
+import com.example.engine.GuideResolutionResult
+import com.example.engine.PhotoAndVideoEngine
 import com.example.engine.ProceduralEngine
-import com.example.model.ABExperimentItem
-import com.example.model.ABVariantChoice
-import com.example.model.ArtboardAlignment
-import com.example.model.GraphiteDocumentModel
-import com.example.model.GraphiteLayer
-import com.example.model.LayerGeometryKind
-import com.example.model.NodeGraphViewMode
-import com.example.model.ProceduralNode
-import com.example.model.ProceduralNodeType
-import com.example.model.SmartGuideLine
-import com.example.model.ToolType
-import com.example.model.Vec2Point
+import com.example.model.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -87,6 +79,7 @@ data class EditorUiState(
     val showABLabSheet: Boolean = false,
     val showCommandPalette: Boolean = false,
     val showLiveDagDrawer: Boolean = false,
+    val workspaceMode: StudioWorkspaceMode = StudioWorkspaceMode.PRO,
     val smartGuidesEnabled: Boolean = true,
     val compactTopBarMode: Boolean = false,
     val activeSmartGuides: List<SmartGuideLine> = emptyList(),
@@ -96,7 +89,179 @@ data class EditorUiState(
     val smartGuideSnapsCount: Int = 27,
     val dagSpatialRewiresCount: Int = 14,
     val abRolloutApplied: Boolean = false,
-    val abExperiments: List<ABExperimentItem> = defaultABExperiments()
+    val abExperiments: List<ABExperimentItem> = defaultABExperiments(),
+    // 4 Contextual Workspace Modes & Unified Creative Suite
+    val creativeDomainMode: CreativeDomainMode = CreativeDomainMode.MODALITA_DESIGN,
+    val activeSuiteSubPanel: SuiteSubPanel = SuiteSubPanel.DESIGN_TEMPLATES,
+    val showCreativeSuiteSheet: Boolean = false,
+    // Graphite Guide (Deterministic Non-AI Assistant)
+    val guideState: GraphiteGuideState = GraphiteGuideState.ACTIVE,
+    val guideQueryText: String = "",
+    val lastGuideResolution: GuideResolutionResult? = null,
+    val activeSpotlightTag: String? = null,
+    val showGuidePttModal: Boolean = false,
+    // Picsart Engine State
+    val photoAdjustments: PhotoAdjustmentsState = PhotoAdjustmentsState(),
+    val retouchState: RetouchAndBgState = RetouchAndBgState(),
+    val filterEffectsState: FilterAndEffectsState = FilterAndEffectsState(),
+    val collageState: CollageComposerState = CollageComposerState(),
+    val activeBrushPreset: RasterBrushPreset = RasterBrushPreset.WATERCOLOR,
+    val brushSizePx: Float = 18f,
+    val brushHardness: Float = 0.78f,
+    val brushOpacity: Float = 0.92f,
+    val bucketTolerance: Float = 0.24f,
+    val videoTimeline: VideoTimelineState = VideoTimelineState(),
+    val lastVideoExportSummary: String? = null,
+    // Canva Engine State
+    val brandKit: LocalBrandKit = LocalBrandKit(),
+    val presentationSlides: List<PresentationSlide> = listOf(
+        PresentationSlide(
+            id = "slide-1",
+            title = "Copertina Progetto",
+            subtitle = "Architettura 100% Locale",
+            speakerNotes = "Benvenuti alla presentazione architetturale Graphite Offline Studio.",
+            transition = VideoTransitionStyle.DISSOLVE,
+            entranceAnim = SlideEntranceAnimation.SLIDE_UP
+        ),
+        PresentationSlide(
+            id = "slide-2",
+            title = "Sistema Design & Palette",
+            subtitle = "Brand Kit & Varianti Componenti",
+            speakerNotes = "Mostra l'applicazione del Brand Kit locale e delle varianti componenti.",
+            transition = VideoTransitionStyle.SLIDE_LEFT,
+            entranceAnim = SlideEntranceAnimation.ZOOM_POP
+        ),
+        PresentationSlide(
+            id = "slide-3",
+            title = "Metriche & Esportazione",
+            subtitle = "Zero Cloud Latency",
+            speakerNotes = "Riepilogo performance 100% locale senza dipendenze cloud.",
+            transition = VideoTransitionStyle.ZOOM_IN,
+            entranceAnim = SlideEntranceAnimation.FADE_IN
+        )
+    ),
+    val activeSlideIndex: Int = 0,
+    val isPlayingPresentation: Boolean = false,
+    val presentationElapsedSeconds: Int = 0,
+    val scheduledPosts: List<SocialPostScheduleItem> = listOf(
+        SocialPostScheduleItem(
+            id = "post-1",
+            title = "Lancio Collezione Estate",
+            channel = "Instagram",
+            dateTimeLabel = "2026-05-15 18:30",
+            captionText = "✨ Lancio Collezione Estate — Creato 100% in locale con Graphite Studio. #DesignLocale #VisualArt #MadeWithGraphite",
+            formatLabel = "Instagram Post 1:1",
+            watermarkEnabled = false
+        ),
+        SocialPostScheduleItem(
+            id = "post-2",
+            title = "Dietro le Quinte Procedurali",
+            channel = "Instagram Story",
+            dateTimeLabel = "2026-05-18 12:00",
+            captionText = "Come nasce Dietro le Quinte Procedurali: dalla bozza vettoriale al risultato finale in 3 passaggi.",
+            formatLabel = "Story 9:16",
+            watermarkEnabled = true
+        )
+    ),
+    // Figma & FigJam Engine State
+    val autoLayoutState: FigmaAutoLayoutState = FigmaAutoLayoutState(),
+    val masterComponents: List<FigmaComponentMaster> = listOf(
+        FigmaComponentMaster(
+            id = "comp-cta-primary",
+            name = "Button / Primary CTA",
+            sourceLayerId = "iso-basin-outer",
+            activeVariant = ComponentVariantState.DEFAULT,
+            overrideLabel = "Inizia Ora",
+            overrideFillHex = 0xFF65BBE5L
+        ),
+        FigmaComponentMaster(
+            id = "comp-card-feature",
+            name = "Card / Feature Tile",
+            sourceLayerId = "iso-basin-outer",
+            activeVariant = ComponentVariantState.HOVER,
+            overrideLabel = "Modulo Offline",
+            overrideFillHex = 0xFF1E293BL
+        )
+    ),
+    val prototypeLinks: List<PrototypeLink> = listOf(
+        PrototypeLink(
+            id = "proto-1",
+            sourceLayerId = "iso-basin-outer",
+            sourceLayerName = "Vasca Isometrica",
+            targetSlideTitle = "Schermata Dettaglio Prodotto",
+            trigger = PrototypeTriggerType.ON_TAP,
+            transition = PrototypeTransitionType.SMART_ANIMATE
+        )
+    ),
+    val isPlayingPrototype: Boolean = false,
+    val activePrototypeScreenName: String = "Home Principale",
+    val offlineComments: List<OfflineCommentThread> = listOf(
+        OfflineCommentThread(
+            id = "comm-1",
+            author = "Elena R. (Lead UI)",
+            message = "Aumentiamo il contrasto del pulsante primario per accessibilità WCAG AAA.",
+            artboardX = 540f,
+            artboardY = 360f,
+            createdAtLabel = "Oggi, 10:15",
+            isResolved = false
+        ),
+        OfflineCommentThread(
+            id = "comm-2",
+            author = "Marco V. (Art Director)",
+            message = "Ottima la griglia Auto Layout a 16px, approvata per il rilascio.",
+            artboardX = 320f,
+            artboardY = 680f,
+            createdAtLabel = "Ieri, 17:40",
+            isResolved = true
+        )
+    ),
+    val versionSnapshots: List<VersionSnapshotItem> = listOf(
+        VersionSnapshotItem(
+            id = "snap-v1",
+            versionTag = "v1.0",
+            titleIt = "Layout Iniziale",
+            author = "Locale",
+            timestampLabel = "Ieri, 14:20",
+            layerCount = 4,
+            nodeCount = 4,
+            diffSummaryIt = "Base vettoriale 4 livelli, palette ciano",
+            serializedJson = "{}"
+        ),
+        VersionSnapshotItem(
+            id = "snap-v2",
+            versionTag = "v1.1",
+            titleIt = "Brand Kit & Componenti",
+            author = "Locale",
+            timestampLabel = "Oggi, 09:45",
+            layerCount = 6,
+            nodeCount = 6,
+            diffSummaryIt = "+2 livelli, Auto Layout attivo, 6 nodi DAG",
+            serializedJson = "{}"
+        )
+    ),
+    val activeDiffReport: String? = null,
+    val figJamStickies: List<FigJamStickyItem> = listOf(
+        FigJamStickyItem(
+            id = "sticky-1",
+            text = "Obiettivo Q3: 100% Zero-Cloud Latency su filtri LUT e grafi",
+            author = "Team Core",
+            colorHex = 0xFFFEF08AL,
+            x = 180f,
+            y = 220f,
+            votes = 5
+        ),
+        FigJamStickyItem(
+            id = "sticky-2",
+            text = "Nuovi preset Social 4:5 e 9:16 con Magic Resize istantaneo",
+            author = "Team Social",
+            colorHex = 0xFFA7F3D0L,
+            x = 520f,
+            y = 220f,
+            votes = 4
+        )
+    ),
+    val figJamTimerSeconds: Int = 300,
+    val figJamTimerRunning: Boolean = false
 ) {
     val selectedLayer: GraphiteLayer?
         get() = document.layers.find { it.id == selectedLayerId } ?: document.layers.lastOrNull()
@@ -222,12 +387,39 @@ class GraphiteViewModel(
     }
 
     fun selectTool(tool: ToolType) {
+        val currentLayer = _uiState.value.selectedLayer
+        if (tool == ToolType.PATH && currentLayer != null && currentLayer.points.isEmpty() && currentLayer.kind != LayerGeometryKind.TEXT) {
+            bakeSelectedLayerToBezierPath()
+            return
+        }
         _uiState.update {
             it.copy(
                 activeTool = tool,
                 statusToast = "${tool.labelIt}: ${tool.hintIt}"
             )
         }
+    }
+
+    fun setWorkspaceMode(mode: StudioWorkspaceMode) {
+        _uiState.update { state ->
+            state.copy(
+                workspaceMode = mode,
+                showRulers = mode == StudioWorkspaceMode.PRO,
+                showPerformanceHud = if (mode != StudioWorkspaceMode.PRO) false else state.showPerformanceHud,
+                showLiveDagDrawer = if (mode == StudioWorkspaceMode.ZEN) false else state.showLiveDagDrawer,
+                compactTopBarMode = mode == StudioWorkspaceMode.EASY,
+                statusToast = "${mode.labelIt}: ${mode.descriptionIt}"
+            )
+        }
+    }
+
+    fun cycleWorkspaceMode() {
+        val next = when (_uiState.value.workspaceMode) {
+            StudioWorkspaceMode.PRO -> StudioWorkspaceMode.EASY
+            StudioWorkspaceMode.EASY -> StudioWorkspaceMode.ZEN
+            StudioWorkspaceMode.ZEN -> StudioWorkspaceMode.PRO
+        }
+        setWorkspaceMode(next)
     }
 
     fun clearToast() {
@@ -940,6 +1132,118 @@ class GraphiteViewModel(
                 showLiveDagDrawer = next,
                 statusToast = if (next) "Split-Workspace Attivo: Tela 2D + Mini-DAG Procedurale" else "Split-Workspace Chiuso"
             )
+        }
+    }
+
+    /**
+     * Patch v3.5 (Zero-Defect Vector Audit):
+     * Converts any primitive layer (Rectangle, Ellipse, Polygon, Star) or evaluated DAG output
+     * into an editable closed Cubic Bézier path (`BEZIER_PATH`) with draggable anchor vertices and C¹/C⁰ handles.
+     */
+    fun bakeSelectedLayerToBezierPath() {
+        val selected = _uiState.value.selectedLayer ?: return
+        if (selected.locked || selected.kind == LayerGeometryKind.TEXT) return
+        val bakedPoints = ProceduralEngine.bakeLayerToEditablePoints(selected)
+        if (bakedPoints.size < 2) return
+        val evaluatedFirst = ProceduralEngine.evaluateLayer(selected).firstOrNull()
+        updateLayer(
+            layerId = selected.id,
+            recordHistory = true,
+            toast = "${selected.name} convertito in Tracciato Bézier (${bakedPoints.size} vertici modificabili)"
+        ) { layer ->
+            layer.copy(
+                kind = LayerGeometryKind.BEZIER_PATH,
+                x = evaluatedFirst?.centerX ?: layer.x,
+                y = evaluatedFirst?.centerY ?: layer.y,
+                width = evaluatedFirst?.width ?: layer.width,
+                height = evaluatedFirst?.height ?: layer.height,
+                closedPath = true,
+                points = bakedPoints
+            )
+        }
+        _uiState.update { it.copy(activeTool = ToolType.PATH) }
+    }
+
+    /**
+     * Patch v3.5 (Zero-Defect Pathfinder Booleans):
+     * Combines the selected layer with the adjacent visible layer using Skia Path.Op algebra
+     * (`0 = Sottrai / Fora`, `1 = Unisci`, `2 = Interseca`, `3 = Escludi XOR`).
+     */
+    fun combineSelectedWithBelowBoolean(opMode: Int) {
+        val state = _uiState.value
+        val doc = state.document
+        val selected = state.selectedLayer ?: return
+        if (selected.locked) return
+
+        val selIdx = doc.layers.indexOfFirst { it.id == selected.id }
+        val partner = doc.layers.take(selIdx).lastOrNull { it.visible && !it.locked }
+            ?: doc.layers.firstOrNull { it.id != selected.id && it.visible && !it.locked }
+
+        val cutterShapeCode = when (selected.kind) {
+            LayerGeometryKind.ELLIPSE -> 0f
+            LayerGeometryKind.RECTANGLE -> 1f
+            else -> 2f
+        }
+        val opLabel = when (opMode) {
+            0 -> "Sottrazione (Foro)"
+            1 -> "Unione Vettoriale"
+            2 -> "Intersezione"
+            else -> "Esclusione (XOR)"
+        }
+
+        if (partner != null && doc.layers.size >= 2) {
+            val relOx = (selected.x - partner.x).coerceIn(-180f, 180f)
+            val relOy = (selected.y - partner.y).coerceIn(-180f, 180f)
+            val ratio = (max(selected.width, selected.height) / max(24f, max(partner.width, partner.height))).coerceIn(0.2f, 1.4f)
+            val boolNode = ProceduralNode(
+                id = "node-bool-${UUID.randomUUID().toString().take(5)}",
+                type = ProceduralNodeType.BOOLEAN_OP,
+                params = mapOf(
+                    "opMode" to opMode.toFloat(),
+                    "cutterShape" to cutterShapeCode,
+                    "offsetX" to relOx,
+                    "offsetY" to relOy,
+                    "scaleRatio" to ratio
+                ),
+                graphX = 320f,
+                graphY = 140f
+            )
+            val newLayers = doc.layers.mapNotNull { l ->
+                when (l.id) {
+                    selected.id -> null // Cutter layer merged into partner's boolean graph
+                    partner.id -> l.copy(
+                        nodes = l.nodes.filterNot { it.type == ProceduralNodeType.BOOLEAN_OP } + boolNode
+                    )
+                    else -> l
+                }
+            }
+            commitDocumentChange(
+                newDoc = doc.copy(layers = newLayers),
+                recordHistory = true,
+                newSelectedLayerId = partner.id,
+                toast = "Pathfinder $opLabel applicata tra '${selected.name}' e '${partner.name}'"
+            )
+        } else {
+            val boolNode = ProceduralNode(
+                id = "node-bool-${UUID.randomUUID().toString().take(5)}",
+                type = ProceduralNodeType.BOOLEAN_OP,
+                params = mapOf(
+                    "opMode" to opMode.toFloat(),
+                    "cutterShape" to 0f,
+                    "offsetX" to 36f,
+                    "offsetY" to 0f,
+                    "scaleRatio" to 0.6f
+                ),
+                graphX = 320f,
+                graphY = 140f
+            )
+            updateLayer(
+                layerId = selected.id,
+                recordHistory = true,
+                toast = "Pathfinder $opLabel applicata a '${selected.name}'"
+            ) { l ->
+                l.copy(nodes = l.nodes.filterNot { it.type == ProceduralNodeType.BOOLEAN_OP } + boolNode)
+            }
         }
     }
 
@@ -1728,6 +2032,15 @@ class GraphiteViewModel(
     fun executeEnterpriseCommand(commandId: String) {
         _uiState.update { it.copy(showCommandPalette = false) }
         when (commandId) {
+            "cmd_bake_to_path" -> {
+                bakeSelectedLayerToBezierPath()
+            }
+            "cmd_boolean_subtract_layers" -> {
+                combineSelectedWithBelowBoolean(opMode = 0)
+            }
+            "cmd_cycle_workspace_mode" -> {
+                cycleWorkspaceMode()
+            }
             "cmd_align_center" -> {
                 alignSelectedLayer(ArtboardAlignment.ALIGN_CENTER_H)
                 alignSelectedLayer(ArtboardAlignment.ALIGN_CENTER_V)
@@ -1816,6 +2129,729 @@ class GraphiteViewModel(
                 compactTopBarMode = true,
                 abRolloutApplied = true,
                 statusToast = "Rollout 100% Varianti Vincenti applicato a tutti i dipartimenti!"
+            )
+        }
+    }
+
+    // =========================================================================
+    // 4 CONTEXTUAL WORKSPACE MODES & UNIFIED CREATIVE SUITE NAVIGATION
+    // =========================================================================
+
+    fun setCreativeDomainMode(mode: CreativeDomainMode) {
+        val defaultPanel = when (mode) {
+            CreativeDomainMode.MODALITA_FOTO -> SuiteSubPanel.PHOTO_CROP_TRANSFORM
+            CreativeDomainMode.MODALITA_DESIGN -> SuiteSubPanel.DESIGN_TEMPLATES
+            CreativeDomainMode.MODALITA_UI_UX -> SuiteSubPanel.UIUX_AUTO_LAYOUT
+            CreativeDomainMode.MODALITA_DISEGNO -> SuiteSubPanel.DRAW_BRUSH_STUDIO
+        }
+        _uiState.update {
+            it.copy(
+                creativeDomainMode = mode,
+                activeSuiteSubPanel = defaultPanel,
+                statusToast = "${mode.labelIt}: ${mode.descriptionIt}"
+            )
+        }
+    }
+
+    fun openSuiteSubPanel(panel: SuiteSubPanel) {
+        _uiState.update {
+            it.copy(
+                creativeDomainMode = panel.domain,
+                activeSuiteSubPanel = panel,
+                showCreativeSuiteSheet = true,
+                activeSpotlightTag = null
+            )
+        }
+    }
+
+    fun toggleCreativeSuiteSheet(show: Boolean? = null) {
+        _uiState.update {
+            val next = show ?: !it.showCreativeSuiteSheet
+            it.copy(showCreativeSuiteSheet = next)
+        }
+    }
+
+    // =========================================================================
+    // GRAPHITE GUIDE — DETERMINISTIC RULE-BASED ASSISTANT (100% NON-AI)
+    // =========================================================================
+
+    fun cycleGraphiteGuideState() {
+        _uiState.update { state ->
+            val next = when (state.guideState) {
+                GraphiteGuideState.ACTIVE -> GraphiteGuideState.HIDDEN_PTT
+                GraphiteGuideState.HIDDEN_PTT -> GraphiteGuideState.OFF
+                GraphiteGuideState.OFF -> GraphiteGuideState.ACTIVE
+            }
+            state.copy(
+                guideState = next,
+                showGuidePttModal = false,
+                activeSpotlightTag = if (next == GraphiteGuideState.OFF) null else state.activeSpotlightTag,
+                statusToast = "Graphite Guide: ${next.hintIt}"
+            )
+        }
+    }
+
+    fun setGraphiteGuideState(newState: GraphiteGuideState) {
+        _uiState.update {
+            it.copy(
+                guideState = newState,
+                showGuidePttModal = false,
+                statusToast = "Graphite Guide impostato su ${newState.badgeIt}"
+            )
+        }
+    }
+
+    fun toggleGuidePttModal(show: Boolean? = null) {
+        _uiState.update {
+            val next = show ?: !it.showGuidePttModal
+            it.copy(showGuidePttModal = next)
+        }
+    }
+
+    fun updateGuideQuery(query: String) {
+        _uiState.update { state ->
+            val resolution = if (query.isNotBlank()) {
+                GraphiteGuideEngine.parseCommand(
+                    rawQuery = query,
+                    activeDomain = state.creativeDomainMode,
+                    selectedLayer = state.selectedLayer
+                )
+            } else {
+                null
+            }
+            state.copy(
+                guideQueryText = query,
+                lastGuideResolution = resolution,
+                activeSpotlightTag = resolution?.spotlightTag
+            )
+        }
+    }
+
+    fun executeGuideCommand(query: String = _uiState.value.guideQueryText) {
+        val state = _uiState.value
+        val resolution = GraphiteGuideEngine.parseCommand(
+            rawQuery = query,
+            activeDomain = state.creativeDomainMode,
+            selectedLayer = state.selectedLayer
+        )
+        _uiState.update {
+            it.copy(
+                guideQueryText = query,
+                lastGuideResolution = resolution,
+                activeSpotlightTag = resolution.spotlightTag,
+                creativeDomainMode = resolution.targetDomain,
+                activeSuiteSubPanel = resolution.targetSubPanel,
+                showCreativeSuiteSheet = true,
+                statusToast = "Guida Deterministica: ${resolution.titleIt}"
+            )
+        }
+    }
+
+    fun triggerGuideInstantAction(actionId: String?) {
+        when (actionId) {
+            "guide_act_remove_bg", "guide_act_portrait_retouch" -> openSuiteSubPanel(SuiteSubPanel.PHOTO_RETOUCH_BG)
+            "guide_act_auto_tonal_curve" -> {
+                applyToneCurvePreset("S_CONTRAST")
+                openSuiteSubPanel(SuiteSubPanel.PHOTO_TONAL_CURVES)
+            }
+            "guide_act_lut_charcoal" -> {
+                applyLutAndEffects(
+                    _uiState.value.filterEffectsState.copy(activeLut = PhotoFilterLutPreset.CHARCOAL_SKETCH)
+                )
+                openSuiteSubPanel(SuiteSubPanel.PHOTO_FILTERS_EFFECTS)
+            }
+            "guide_act_lut_vintage" -> {
+                applyLutAndEffects(
+                    _uiState.value.filterEffectsState.copy(activeLut = PhotoFilterLutPreset.VINTAGE)
+                )
+                openSuiteSubPanel(SuiteSubPanel.PHOTO_FILTERS_EFFECTS)
+            }
+            "guide_act_crop_straighten" -> openSuiteSubPanel(SuiteSubPanel.PHOTO_CROP_TRANSFORM)
+            "guide_act_generate_collage" -> {
+                generateCollageOnCanvas()
+                openSuiteSubPanel(SuiteSubPanel.PHOTO_COLLAGE)
+            }
+            "guide_act_open_video" -> openSuiteSubPanel(SuiteSubPanel.VIDEO_TIMELINE)
+            "guide_act_magic_resize_story" -> applyMagicResize(1080, 1920, "Story 9:16")
+            "guide_act_apply_brand_kit" -> applyLocalBrandKitToDocument()
+            "guide_act_start_presentation" -> togglePresentationPlayer(true)
+            "guide_act_schedule_post" -> openSuiteSubPanel(SuiteSubPanel.DESIGN_SOCIAL_PLANNER)
+            "guide_act_apply_autolayout" -> {
+                applyFigmaAutoLayout(_uiState.value.autoLayoutState.copy(enabled = true))
+            }
+            "guide_act_create_component" -> openSuiteSubPanel(SuiteSubPanel.UIUX_COMPONENTS)
+            "guide_act_launch_prototype" -> togglePrototypePlayer(true)
+            "guide_act_add_sticky" -> {
+                addFigJamStickyNote("Idea Brainstorming Locale")
+                openSuiteSubPanel(SuiteSubPanel.UIUX_FIGJAM_BOARD)
+            }
+            "guide_act_save_version_snapshot" -> {
+                saveVersionSnapshot("v1.${_uiState.value.versionSnapshots.size + 1}")
+                openSuiteSubPanel(SuiteSubPanel.UIUX_COLLAB_HISTORY)
+            }
+            "guide_act_inspect_code" -> openSuiteSubPanel(SuiteSubPanel.UIUX_HANDOFF_INSPECT)
+            "guide_act_bake_vector_network" -> {
+                selectTool(ToolType.PATH)
+                openSuiteSubPanel(SuiteSubPanel.DRAW_VECTOR_BOOLEAN)
+            }
+            else -> toggleCreativeSuiteSheet(true)
+        }
+    }
+
+    fun dismissGuideSpotlight() {
+        _uiState.update { it.copy(activeSpotlightTag = null, lastGuideResolution = null) }
+    }
+
+    // =========================================================================
+    // PHASE 1: PICSART ENGINE (CROP, TONAL, CURVES, RETOUCH, LUT, COLLAGE, VIDEO)
+    // =========================================================================
+
+    fun applyPhotoAdjustmentsToLayer(newAdjustments: PhotoAdjustmentsState) {
+        val state = _uiState.value
+        val target = state.selectedLayer
+        _uiState.update { it.copy(photoAdjustments = newAdjustments) }
+        if (target != null) {
+            val adjusted = PhotoAndVideoEngine.applyPhotoAdjustmentsToLayer(target, newAdjustments)
+            updateLayer(
+                layerId = target.id,
+                toast = "Regolazioni fotografiche applicate a ${target.name}"
+            ) { adjusted }
+        }
+    }
+
+    fun applyCropRatioToArtboard(ratio: PhotoCropAspectRatio, straightenDeg: Float = _uiState.value.photoAdjustments.horizonStraightenDeg) {
+        val state = _uiState.value
+        val doc = state.document
+        val (newW, newH) = when (ratio) {
+            PhotoCropAspectRatio.FREE -> doc.artboardWidth to doc.artboardHeight
+            PhotoCropAspectRatio.RATIO_1_1 -> {
+                val side = min(doc.artboardWidth, doc.artboardHeight)
+                side to side
+            }
+            PhotoCropAspectRatio.RATIO_4_5 -> {
+                val w = doc.artboardWidth
+                w to (w * 5 / 4)
+            }
+            PhotoCropAspectRatio.RATIO_16_9 -> {
+                val w = doc.artboardWidth
+                w to (w * 9 / 16)
+            }
+            PhotoCropAspectRatio.RATIO_9_16 -> {
+                val w = min(doc.artboardWidth, 1080)
+                w to (w * 16 / 9)
+            }
+        }
+        val updatedAdj = state.photoAdjustments.copy(
+            cropRatio = ratio,
+            horizonStraightenDeg = straightenDeg.coerceIn(-45f, 45f)
+        )
+        _uiState.update { it.copy(photoAdjustments = updatedAdj) }
+        commitDocumentChange(
+            doc.copy(artboardWidth = newW, artboardHeight = newH),
+            toast = "Crop ${ratio.labelIt} (${newW}×${newH}px) applicato"
+        )
+    }
+
+    fun rotateArtboard90Degrees() {
+        val doc = _uiState.value.document
+        commitDocumentChange(
+            doc.copy(artboardWidth = doc.artboardHeight, artboardHeight = doc.artboardWidth),
+            toast = "Tavola ruotata di 90° (${doc.artboardHeight}×${doc.artboardWidth}px)"
+        )
+    }
+
+    fun flipSelectedLayerAxes(horizontal: Boolean) {
+        val adj = _uiState.value.photoAdjustments
+        val nextAdj = if (horizontal) {
+            adj.copy(flipHorizontal = !adj.flipHorizontal)
+        } else {
+            adj.copy(flipVertical = !adj.flipVertical)
+        }
+        applyPhotoAdjustmentsToLayer(nextAdj)
+    }
+
+    fun applyToneCurvePreset(presetName: String) {
+        val points = when (presetName) {
+            "S_CONTRAST" -> listOf(
+                CurveControlPoint(0f, 0f),
+                CurveControlPoint(0.25f, 0.16f),
+                CurveControlPoint(0.50f, 0.50f),
+                CurveControlPoint(0.75f, 0.84f),
+                CurveControlPoint(1f, 1f)
+            )
+            "MATTE_FADE" -> listOf(
+                CurveControlPoint(0f, 0.10f),
+                CurveControlPoint(0.25f, 0.28f),
+                CurveControlPoint(0.50f, 0.52f),
+                CurveControlPoint(0.75f, 0.76f),
+                CurveControlPoint(1f, 0.92f)
+            )
+            "HIGH_KEY" -> listOf(
+                CurveControlPoint(0f, 0.05f),
+                CurveControlPoint(0.25f, 0.36f),
+                CurveControlPoint(0.50f, 0.64f),
+                CurveControlPoint(0.75f, 0.88f),
+                CurveControlPoint(1f, 1f)
+            )
+            else -> listOf(
+                CurveControlPoint(0f, 0f),
+                CurveControlPoint(0.25f, 0.25f),
+                CurveControlPoint(0.50f, 0.50f),
+                CurveControlPoint(0.75f, 0.75f),
+                CurveControlPoint(1f, 1f)
+            )
+        }
+        val nextAdj = _uiState.value.photoAdjustments.copy(rgbCurvePoints = points)
+        applyPhotoAdjustmentsToLayer(nextAdj)
+    }
+
+    fun updateRetouchAndBgState(newRetouch: RetouchAndBgState) {
+        val state = _uiState.value
+        _uiState.update { it.copy(retouchState = newRetouch) }
+        val (updatedDoc, msg) = PhotoAndVideoEngine.applyRetouchAndBgOperation(
+            doc = state.document,
+            selectedLayer = state.selectedLayer,
+            retouch = newRetouch
+        )
+        commitDocumentChange(updatedDoc, toast = msg)
+    }
+
+    fun applyLutAndEffects(newEffects: FilterAndEffectsState) {
+        val state = _uiState.value
+        val target = state.selectedLayer
+        _uiState.update { it.copy(filterEffectsState = newEffects) }
+        if (target != null) {
+            val updated = PhotoAndVideoEngine.applyFilterAndEffectsToLayer(target, newEffects)
+            updateLayer(
+                layerId = target.id,
+                toast = "Filtro LUT ${newEffects.activeLut.labelIt} applicato"
+            ) { updated }
+        }
+    }
+
+    fun generateCollageOnCanvas(collageConfig: CollageComposerState = _uiState.value.collageState) {
+        val state = _uiState.value
+        val updatedDoc = PhotoAndVideoEngine.generateCollageOnDocument(
+            doc = state.document,
+            collage = collageConfig
+        )
+        _uiState.update { it.copy(collageState = collageConfig) }
+        commitDocumentChange(
+            updatedDoc,
+            newSelectedLayerId = updatedDoc.layers.firstOrNull()?.id,
+            toast = "Collage ${collageConfig.cellCount} celle (${collageConfig.shapeMask.labelIt}) generato"
+        )
+    }
+
+    fun insertLocalStickerOnCanvas(sticker: LocalStickerAsset) {
+        val state = _uiState.value
+        val doc = state.document
+        val layer = GraphiteLayer(
+            id = "sticker-${sticker.id}-${UUID.randomUUID().toString().take(4)}",
+            name = "Sticker: ${sticker.titleIt}",
+            kind = sticker.kind,
+            x = doc.artboardWidth / 2f,
+            y = doc.artboardHeight / 2f,
+            width = 210f,
+            height = 210f,
+            polygonSides = sticker.polygonSides,
+            cornerRadius = 24f,
+            fillColorHex = sticker.colorHex,
+            strokeColorHex = 0xFFFFFFFFL,
+            strokeWidth = 4f
+        )
+        commitDocumentChange(
+            doc.copy(layers = doc.layers + layer),
+            newSelectedLayerId = layer.id,
+            toast = "Sticker '${sticker.titleIt}' aggiunto alla tavola"
+        )
+    }
+
+    fun applyRasterBrushPreset(
+        preset: RasterBrushPreset,
+        sizePx: Float = preset.defaultSizePx,
+        hardness: Float = preset.defaultHardness,
+        opacity: Float = preset.defaultOpacity
+    ) {
+        _uiState.update {
+            it.copy(
+                activeBrushPreset = preset,
+                brushSizePx = sizePx.coerceIn(2f, 120f),
+                brushHardness = hardness.coerceIn(0.05f, 1f),
+                brushOpacity = opacity.coerceIn(0.05f, 1f),
+                defaultStrokeWidth = sizePx.coerceIn(2f, 120f),
+                activeTool = if (preset == RasterBrushPreset.BUCKET_FILL) ToolType.FILL else ToolType.BRUSH,
+                statusToast = "Pennello ${preset.labelIt} attivo (${sizePx.toInt()}px)"
+            )
+        }
+    }
+
+    fun updateVideoTimeline(newTimeline: VideoTimelineState) {
+        val summary = PhotoAndVideoEngine.buildMp4ExportSummary(newTimeline)
+        _uiState.update {
+            it.copy(
+                videoTimeline = newTimeline,
+                lastVideoExportSummary = summary,
+                statusToast = "Timeline Video aggiornata"
+            )
+        }
+    }
+
+    fun splitSelectedVideoClip() {
+        val tl = _uiState.value.videoTimeline
+        val first = tl.clips.firstOrNull() ?: return
+        val midSec = (first.trimStartSec + first.trimEndSec) / 2f
+        if (midSec <= first.trimStartSec + 0.2f) return
+        val clipA = first.copy(trimEndSec = midSec, title = "${first.title} (Parte A)")
+        val clipB = first.copy(
+            id = "clip-${UUID.randomUUID().toString().take(5)}",
+            trimStartSec = midSec,
+            title = "${first.title} (Parte B)"
+        )
+        val updatedClips = listOf(clipA, clipB) + tl.clips.drop(1)
+        updateVideoTimeline(tl.copy(clips = updatedClips))
+    }
+
+    fun exportLocalVideoMp4() {
+        val summary = PhotoAndVideoEngine.buildMp4ExportSummary(_uiState.value.videoTimeline)
+        _uiState.update {
+            it.copy(
+                lastVideoExportSummary = summary,
+                statusToast = summary
+            )
+        }
+    }
+
+    // =========================================================================
+    // PHASE 2: CANVA ENGINE (TEMPLATES, BRAND KIT, PRESENTATIONS, SOCIAL)
+    // =========================================================================
+
+    fun applyCanvaTemplate(template: LocalCanvaTemplate) {
+        val doc = PhotoAndVideoEngine.applyCanvaTemplateToDocument(template)
+        commitDocumentChange(
+            doc,
+            newSelectedLayerId = doc.layers.firstOrNull()?.id,
+            toast = "Template '${template.titleIt}' (${doc.artboardWidth}×${doc.artboardHeight}) caricato"
+        )
+    }
+
+    fun applyLocalBrandKitToDocument(kit: LocalBrandKit = _uiState.value.brandKit) {
+        val doc = _uiState.value.document
+        val updatedDoc = PhotoAndVideoEngine.applyBrandKitToDocument(doc, kit)
+        _uiState.update { it.copy(brandKit = kit) }
+        commitDocumentChange(
+            updatedDoc,
+            toast = "Brand Kit '${kit.brandName}' applicato con 1-Tap a tutti i livelli"
+        )
+    }
+
+    fun toggleBrandStyleLock() {
+        _uiState.update { state ->
+            val nextKit = state.brandKit.copy(isStyleLocked = !state.brandKit.isStyleLocked)
+            state.copy(
+                brandKit = nextKit,
+                statusToast = if (nextKit.isStyleLocked) "Stili Brand bloccati contro modifiche accidentali" else "Stili Brand sbloccati"
+            )
+        }
+    }
+
+    fun applyMagicResize(targetWidth: Int, targetHeight: Int, formatLabel: String) {
+        val resized = PhotoAndVideoEngine.magicResizeDocument(
+            doc = _uiState.value.document,
+            targetW = targetWidth,
+            targetH = targetHeight,
+            formatLabel = formatLabel
+        )
+        commitDocumentChange(
+            resized,
+            toast = "Magic Resize completato: $formatLabel (${targetWidth}×${targetHeight}px)"
+        )
+    }
+
+    fun addPresentationSlide(title: String, speakerNotes: String) {
+        val nextIndex = _uiState.value.presentationSlides.size + 1
+        val slide = PresentationSlide(
+            id = "slide-$nextIndex-${UUID.randomUUID().toString().take(4)}",
+            title = title.ifBlank { "Slide $nextIndex" },
+            subtitle = "Sezione #$nextIndex",
+            speakerNotes = speakerNotes.ifBlank { "Note del relatore per la slide $nextIndex." },
+            transition = VideoTransitionStyle.SLIDE_LEFT,
+            entranceAnim = SlideEntranceAnimation.SLIDE_UP
+        )
+        _uiState.update {
+            it.copy(
+                presentationSlides = it.presentationSlides + slide,
+                activeSlideIndex = it.presentationSlides.size,
+                statusToast = "Slide '${slide.title}' aggiunta allo Storyboard"
+            )
+        }
+    }
+
+    fun selectPresentationSlide(index: Int) {
+        _uiState.update { state ->
+            val safeIdx = index.coerceIn(0, max(0, state.presentationSlides.lastIndex))
+            state.copy(activeSlideIndex = safeIdx)
+        }
+    }
+
+    fun togglePresentationPlayer(play: Boolean? = null) {
+        _uiState.update { state ->
+            val next = play ?: !state.isPlayingPresentation
+            state.copy(
+                isPlayingPresentation = next,
+                showCreativeSuiteSheet = if (next) false else state.showCreativeSuiteSheet,
+                statusToast = if (next) "Modalità Presentazione Fullscreen avviata" else "Modalità Presentazione terminata"
+            )
+        }
+    }
+
+    fun scheduleLocalSocialPost(title: String, channel: String, dateText: String, categoryTone: String, includeWatermark: Boolean) {
+        val projectTitle = title.ifBlank { _uiState.value.document.name }
+        val caption = PhotoAndVideoEngine.generateDeterministicCaption(categoryTone, projectTitle)
+        val item = SocialPostScheduleItem(
+            id = "post-${UUID.randomUUID().toString().take(6)}",
+            title = projectTitle,
+            channel = channel,
+            dateTimeLabel = dateText.ifBlank { "2026-06-01 18:00" },
+            captionText = caption,
+            formatLabel = "${_uiState.value.document.artboardWidth}×${_uiState.value.document.artboardHeight}",
+            watermarkEnabled = includeWatermark
+        )
+        _uiState.update {
+            it.copy(
+                scheduledPosts = listOf(item) + it.scheduledPosts,
+                statusToast = "Post pianificato nel calendario offline per $channel"
+            )
+        }
+        viewModelScope.launch {
+            repository.saveScheduledPost(item)
+        }
+    }
+
+    // =========================================================================
+    // PHASE 3: FIGMA & FIGJAM ENGINE (AUTO LAYOUT, COMPONENTS, PROTOTYPE, DIFF)
+    // =========================================================================
+
+    fun applyDeviceFramePreset(preset: DeviceFramePreset) {
+        val resized = PhotoAndVideoEngine.magicResizeDocument(
+            doc = _uiState.value.document,
+            targetW = preset.widthPx,
+            targetH = preset.heightPx,
+            formatLabel = preset.labelIt
+        )
+        commitDocumentChange(
+            resized,
+            toast = "Frame Dispositivo ${preset.labelIt} (${preset.widthPx}×${preset.heightPx}) applicato"
+        )
+    }
+
+    fun applyFigmaAutoLayout(config: FigmaAutoLayoutState) {
+        val updatedDoc = PhotoAndVideoEngine.applyFigmaAutoLayout(
+            doc = _uiState.value.document,
+            config = config
+        )
+        _uiState.update { it.copy(autoLayoutState = config) }
+        commitDocumentChange(
+            updatedDoc,
+            toast = "Figma Auto Layout (${config.direction.labelIt}, gap ${config.spacingPx.toInt()}px) applicato"
+        )
+    }
+
+    fun instantiateFigmaComponent(master: FigmaComponentMaster, variant: ComponentVariantState = master.activeVariant) {
+        val doc = _uiState.value.document
+        val fill = when (variant) {
+            ComponentVariantState.DEFAULT -> master.overrideFillHex ?: 0xFF65BBE5L
+            ComponentVariantState.HOVER -> 0xFF38BDF8L
+            ComponentVariantState.PRESSED -> 0xFF0284C7L
+            ComponentVariantState.DISABLED -> 0xFF475569L
+        }
+        val newLayer = GraphiteLayer(
+            id = "inst-${UUID.randomUUID().toString().take(6)}",
+            name = "${master.name} [${variant.labelIt}]",
+            kind = LayerGeometryKind.RECTANGLE,
+            x = doc.artboardWidth / 2f,
+            y = doc.artboardHeight / 2f,
+            width = 280f * variant.scaleMod,
+            height = 76f * variant.scaleMod,
+            cornerRadius = 18f,
+            opacity = variant.alphaMod,
+            fillColorHex = fill,
+            strokeColorHex = 0xFFFFFFFFL,
+            strokeWidth = 2f,
+            textContent = "${master.overrideLabel.ifBlank { master.name }} (${variant.labelIt})"
+        )
+        commitDocumentChange(
+            doc.copy(layers = doc.layers + newLayer),
+            newSelectedLayerId = newLayer.id,
+            toast = "Istanza '${master.name}' (${variant.labelIt}) inserita"
+        )
+    }
+
+    fun addPrototypeLink(targetFrameName: String, trigger: PrototypeTriggerType, transition: PrototypeTransitionType) {
+        val sel = _uiState.value.selectedLayer ?: _uiState.value.document.layers.firstOrNull()
+        val sourceId = sel?.id ?: "root"
+        val sourceName = sel?.name ?: "Tavola Principale"
+        val link = PrototypeLink(
+            id = "proto-${UUID.randomUUID().toString().take(5)}",
+            sourceLayerId = sourceId,
+            sourceLayerName = sourceName,
+            targetSlideTitle = targetFrameName.ifBlank { "Schermata Checkout" },
+            trigger = trigger,
+            transition = transition
+        )
+        _uiState.update {
+            it.copy(
+                prototypeLinks = it.prototypeLinks + link,
+                statusToast = "Connessione Prototipo aggiunta (${trigger.labelIt} → ${link.targetSlideTitle})"
+            )
+        }
+    }
+
+    fun togglePrototypePlayer(play: Boolean? = null) {
+        _uiState.update { state ->
+            val next = play ?: !state.isPlayingPrototype
+            state.copy(
+                isPlayingPrototype = next,
+                showCreativeSuiteSheet = if (next) false else state.showCreativeSuiteSheet,
+                statusToast = if (next) "Player Interattivo Figma avviato" else "Player Prototipo chiuso"
+            )
+        }
+    }
+
+    fun triggerPrototypeNavigation(targetScreen: String) {
+        _uiState.update {
+            it.copy(
+                activePrototypeScreenName = targetScreen,
+                statusToast = "Smart Animate → $targetScreen"
+            )
+        }
+    }
+
+    fun addOfflineComment(authorName: String, message: String) {
+        if (message.isBlank()) return
+        val sel = _uiState.value.selectedLayer
+        val anchorX = sel?.x ?: (_uiState.value.document.artboardWidth / 2f)
+        val anchorY = sel?.y ?: (_uiState.value.document.artboardHeight / 2f)
+        val item = OfflineCommentThread(
+            id = "comm-${UUID.randomUUID().toString().take(6)}",
+            author = authorName.ifBlank { "Designer Locale" },
+            message = message.trim(),
+            artboardX = anchorX,
+            artboardY = anchorY,
+            createdAtLabel = "Adesso",
+            isResolved = false
+        )
+        _uiState.update {
+            it.copy(
+                offlineComments = listOf(item) + it.offlineComments,
+                statusToast = "Commento ancorato a (${anchorX.toInt()}, ${anchorY.toInt()})"
+            )
+        }
+        viewModelScope.launch {
+            repository.saveOfflineComment(
+                documentId = _uiState.value.document.id,
+                author = item.author,
+                message = item.message,
+                artboardX = item.artboardX,
+                artboardY = item.artboardY,
+                createdAtLabel = item.createdAtLabel,
+                id = item.id,
+                isResolved = item.isResolved
+            )
+        }
+    }
+
+    fun toggleCommentResolved(commentId: String) {
+        _uiState.update { state ->
+            val updated = state.offlineComments.map {
+                if (it.id == commentId) it.copy(isResolved = !it.isResolved) else it
+            }
+            state.copy(offlineComments = updated)
+        }
+    }
+
+    fun saveVersionSnapshot(versionLabel: String, author: String = "Locale") {
+        val doc = _uiState.value.document
+        val totalNodes = doc.layers.sumOf { it.nodes.size }
+        val prevDoc = DemoArtworkFactory.createIsometricFountain()
+        val diffReport = "Visual Diff: " + PhotoAndVideoEngine.computeVisualDiffBetweenSnapshots(
+            olderDoc = prevDoc,
+            currentDoc = doc
+        )
+        val tag = "v1.${_uiState.value.versionSnapshots.size + 1}"
+        val snap = VersionSnapshotItem(
+            id = "snap-${UUID.randomUUID().toString().take(6)}",
+            versionTag = tag,
+            titleIt = versionLabel.ifBlank { "$tag — Snapshot" },
+            author = author,
+            timestampLabel = "Adesso",
+            layerCount = doc.layers.size,
+            nodeCount = totalNodes,
+            diffSummaryIt = diffReport,
+            serializedJson = ProceduralEngine.toGraphiteJson(doc)
+        )
+        _uiState.update {
+            it.copy(
+                versionSnapshots = listOf(snap) + it.versionSnapshots,
+                activeDiffReport = diffReport,
+                statusToast = "Versione '${snap.titleIt}' salvata nella cronologia locale"
+            )
+        }
+        viewModelScope.launch {
+            repository.saveVersionSnapshot(
+                doc = doc,
+                versionTag = snap.versionTag,
+                titleIt = snap.titleIt,
+                author = snap.author,
+                diffSummaryIt = snap.diffSummaryIt
+            )
+        }
+    }
+
+    fun addFigJamStickyNote(text: String, colorHex: Long = 0xFFFEF08AL) {
+        if (text.isBlank()) return
+        val doc = _uiState.value.document
+        val sticky = FigJamStickyItem(
+            id = "sticky-${UUID.randomUUID().toString().take(5)}",
+            text = text.trim(),
+            author = "Team Locale",
+            colorHex = colorHex,
+            x = doc.artboardWidth / 2f,
+            y = doc.artboardHeight / 2f,
+            votes = 1
+        )
+        val layer = GraphiteLayer(
+            id = sticky.id,
+            name = "Sticky: ${sticky.text.take(18)}",
+            kind = LayerGeometryKind.RECTANGLE,
+            x = sticky.x,
+            y = sticky.y,
+            width = 240f,
+            height = 200f,
+            cornerRadius = 18f,
+            fillColorHex = colorHex,
+            strokeColorHex = 0xFF0F172AL,
+            strokeWidth = 2f,
+            textContent = sticky.text
+        )
+        _uiState.update {
+            it.copy(figJamStickies = listOf(sticky) + it.figJamStickies)
+        }
+        commitDocumentChange(
+            doc.copy(layers = doc.layers + layer),
+            newSelectedLayerId = layer.id,
+            toast = "Nota adesiva FigJam aggiunta alla lavagna"
+        )
+    }
+
+    fun voteFigJamSticky(stickyId: String) {
+        _uiState.update { state ->
+            val updated = state.figJamStickies.map {
+                if (it.id == stickyId) it.copy(votes = it.votes + 1) else it
+            }
+            state.copy(
+                figJamStickies = updated,
+                statusToast = "Voto aggiunto alla nota FigJam!"
             )
         }
     }

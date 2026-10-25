@@ -1835,7 +1835,56 @@ object ProceduralEngine {
     }
 
     /**
-     * Converts any EvaluatedShapeInstance into a unified SVG / Android VectorDrawable pathData string (`M ... L ... C ... Z`).
+     * Patch v3.5 (Zero-Defect Vector Audit):
+     * Converts any primitive layer (Rectangle, Ellipse, Polygon, Star) or evaluated DAG geometry
+     * into explicit editable Cubic Bézier anchor points (`Vec2Point`) with tangent handles.
+     */
+    fun bakeLayerToEditablePoints(layer: GraphiteLayer): List<Vec2Point> {
+        if (layer.points.size >= 2) return layer.points
+        val evaluated = evaluateLayer(layer).firstOrNull() ?: return emptyList()
+        val rx = evaluated.width / 2f
+        val ry = evaluated.height / 2f
+        val cx = evaluated.centerX
+        val cy = evaluated.centerY
+
+        if (evaluated.kind == LayerGeometryKind.ELLIPSE && evaluated.waveAmplitude <= 0.5f) {
+            // Exact 4-anchor Kappa (0.5522847) Cubic Bézier circle/ellipse approximation
+            val k = 0.5522847f
+            val kx = rx * k
+            val ky = ry * k
+            return listOf(
+                Vec2Point(x = cx, y = cy - ry, handleInX = cx - kx, handleInY = cy - ry, handleOutX = cx + kx, handleOutY = cy - ry, smooth = true),
+                Vec2Point(x = cx + rx, y = cy, handleInX = cx + rx, handleInY = cy - ky, handleOutX = cx + rx, handleOutY = cy + ky, smooth = true),
+                Vec2Point(x = cx, y = cy + ry, handleInX = cx + kx, handleInY = cy + ry, handleOutX = cx - kx, handleOutY = cy + ry, smooth = true),
+                Vec2Point(x = cx - rx, y = cy, handleInX = cx - rx, handleInY = cy + ky, handleOutX = cx - rx, handleOutY = cy - ky, smooth = true)
+            )
+        }
+
+        val rawVerts = buildShapeVertices(evaluated)
+        if (rawVerts.size < 3) return emptyList()
+        val n = rawVerts.size
+        val tension = if (evaluated.kind == LayerGeometryKind.RECTANGLE) 0.12f else 0.18f
+
+        return rawVerts.mapIndexed { idx, (vx, vy) ->
+            val prev = rawVerts[(idx - 1 + n) % n]
+            val next = rawVerts[(idx + 1) % n]
+            val tx = (next.first - prev.first) * tension
+            val ty = (next.second - prev.second) * tension
+            Vec2Point(
+                x = vx,
+                y = vy,
+                handleInX = vx - tx,
+                handleInY = vy - ty,
+                handleOutX = vx + tx,
+                handleOutY = vy + ty,
+                smooth = evaluated.kind != LayerGeometryKind.RECTANGLE && evaluated.kind != LayerGeometryKind.STAR
+            )
+        }
+    }
+
+    /**
+     * Converts any EvaluatedShapeInstance into a unified SVG / Android VectorDrawable pathData string (`M ... L ... Q ... C ... Z`).
+     * Preserves exact rounded corners (`cornerRadius`) on Rectangles using Quadratic Bézier (`Q`) arcs.
      */
     fun instanceToUnifiedPathData(inst: EvaluatedShapeInstance): String {
         if (inst.booleanOp != null && inst.kind in listOf(
@@ -1848,6 +1897,33 @@ object ProceduralEngine {
             return booleanSvgPathData(inst)
         }
         return when (inst.kind) {
+            LayerGeometryKind.RECTANGLE -> {
+                val cr = min(inst.cornerRadius, min(inst.width, inst.height) * 0.5f)
+                if (inst.waveAmplitude <= 0.5f && cr > 0.5f) {
+                    val l = inst.centerX - inst.width / 2f
+                    val r = inst.centerX + inst.width / 2f
+                    val t = inst.centerY - inst.height / 2f
+                    val b = inst.centerY + inst.height / 2f
+                    String.format(
+                        Locale.US,
+                        "M %.1f %.1f L %.1f %.1f Q %.1f %.1f %.1f %.1f L %.1f %.1f Q %.1f %.1f %.1f %.1f L %.1f %.1f Q %.1f %.1f %.1f %.1f L %.1f %.1f Q %.1f %.1f %.1f %.1f Z",
+                        l + cr, t,
+                        r - cr, t, r, t, r, t + cr,
+                        r, b - cr, r, b, r - cr, b,
+                        l + cr, b, l, b, l, b - cr,
+                        l, t + cr, l, t, l + cr, t
+                    )
+                } else {
+                    val verts = buildShapeVertices(inst)
+                    val sb = StringBuilder()
+                    verts.forEachIndexed { idx, (px, py) ->
+                        if (idx == 0) sb.append(String.format(Locale.US, "M %.1f %.1f", px, py))
+                        else sb.append(String.format(Locale.US, " L %.1f %.1f", px, py))
+                    }
+                    sb.append(" Z")
+                    sb.toString()
+                }
+            }
             LayerGeometryKind.BEZIER_PATH -> {
                 if (inst.points.size >= 2) {
                     val dSb = StringBuilder()
@@ -1987,6 +2063,7 @@ object ProceduralEngine {
 
     /**
      * Phase 6 (TP-E6 — Gruppo E): Enterprise Jetpack Compose `ImageVector` Kotlin Code Generator.
+     * Preserves rounded rectangle corners via `quadTo(...)`.
      */
     fun exportToComposeImageVector(doc: GraphiteDocumentModel): String {
         val pascalName = doc.name
@@ -2037,7 +2114,23 @@ object ProceduralEngine {
                 sb.appendLine("            pathFillType = $fillTypePart")
                 sb.appendLine("        ) {")
 
-                if (inst.kind == LayerGeometryKind.BEZIER_PATH && inst.points.size >= 2) {
+                val cr = min(inst.cornerRadius, min(inst.width, inst.height) * 0.5f)
+                if (inst.kind == LayerGeometryKind.RECTANGLE && inst.waveAmplitude <= 0.5f && cr > 0.5f) {
+                    val l = inst.centerX - inst.width / 2f
+                    val r = inst.centerX + inst.width / 2f
+                    val t = inst.centerY - inst.height / 2f
+                    val b = inst.centerY + inst.height / 2f
+                    sb.appendLine(String.format(Locale.US, "            moveTo(%.1ff, %.1ff)", l + cr, t))
+                    sb.appendLine(String.format(Locale.US, "            lineTo(%.1ff, %.1ff)", r - cr, t))
+                    sb.appendLine(String.format(Locale.US, "            quadTo(%.1ff, %.1ff, %.1ff, %.1ff)", r, t, r, t + cr))
+                    sb.appendLine(String.format(Locale.US, "            lineTo(%.1ff, %.1ff)", r, b - cr))
+                    sb.appendLine(String.format(Locale.US, "            quadTo(%.1ff, %.1ff, %.1ff, %.1ff)", r, b, r - cr, b))
+                    sb.appendLine(String.format(Locale.US, "            lineTo(%.1ff, %.1ff)", l + cr, b))
+                    sb.appendLine(String.format(Locale.US, "            quadTo(%.1ff, %.1ff, %.1ff, %.1ff)", l, b, l, b - cr))
+                    sb.appendLine(String.format(Locale.US, "            lineTo(%.1ff, %.1ff)", l, t + cr))
+                    sb.appendLine(String.format(Locale.US, "            quadTo(%.1ff, %.1ff, %.1ff, %.1ff)", l, t, l + cr, t))
+                    sb.appendLine("            close()")
+                } else if (inst.kind == LayerGeometryKind.BEZIER_PATH && inst.points.size >= 2) {
                     val first = inst.points.first()
                     sb.appendLine(String.format(Locale.US, "            moveTo(%.1ff, %.1ff)", first.x, first.y))
                     for (i in 1 until inst.points.size) {

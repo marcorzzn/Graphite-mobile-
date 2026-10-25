@@ -425,6 +425,28 @@ enum class ArtboardAlignment(val labelIt: String, val shortLabelIt: String) {
     DISTRIBUTE_V("Distribuisci Verticalmente", "⇕ Distr. Y")
 }
 
+enum class StudioWorkspaceMode(
+    val labelIt: String,
+    val badgeIt: String,
+    val descriptionIt: String
+) {
+    EASY(
+        labelIt = "Modalità Easy",
+        badgeIt = "✨ Easy",
+        descriptionIt = "Interfaccia semplificata per principianti e creativi: nasconde righelli e telemetria tecnica."
+    ),
+    PRO(
+        labelIt = "Modalità Pro CAD",
+        badgeIt = "🛠️ Pro",
+        descriptionIt = "Workstation completa Enterprise con Righelli CAD, Split DAG, Telemetria e Dev-Handoff."
+    ),
+    ZEN(
+        labelIt = "Modalità Zen",
+        badgeIt = "🧘 Zen",
+        descriptionIt = "Tela pura a tutto schermo (95% viewport libero) senza dock inferiori né righelli."
+    )
+}
+
 data class EnterpriseCommandItem(
     val id: String,
     val divisionBadge: String,
@@ -434,6 +456,27 @@ data class EnterpriseCommandItem(
 )
 
 val ENTERPRISE_COMMAND_CATALOG = listOf(
+    EnterpriseCommandItem(
+        id = "cmd_bake_to_path",
+        divisionBadge = "GRUPPO B • VETTORI",
+        titleIt = "Converti Forma in Tracciato Modificabile (Bake to Path)",
+        subtitleIt = "Trasforma Rettangoli, Stelle, Ellissi o Nodi in vertici e tangenti Bézier C¹",
+        shortcutHint = "⌘B"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_boolean_subtract_layers",
+        divisionBadge = "GRUPPO C • PATHFINDER",
+        titleIt = "Pathfinder: Sottrai Forma dal Livello Sottostante",
+        subtitleIt = "Applica operazione booleana Skia tra i livelli attivi sulla tavola",
+        shortcutHint = "⌥S"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_cycle_workspace_mode",
+        divisionBadge = "GRUPPO D • ADAPTIVE UX",
+        titleIt = "Cambia Modalità Studio (Easy / Pro CAD / Zen)",
+        subtitleIt = "Adatta la densità dell'interfaccia per Principianti, Esperti o Schermo Intero",
+        shortcutHint = "⇥M"
+    ),
     EnterpriseCommandItem(
         id = "cmd_align_center",
         divisionBadge = "GRUPPO B • CAD",
@@ -491,6 +534,7 @@ val ENTERPRISE_COMMAND_CATALOG = listOf(
         shortcutHint = "⌘R"
     )
 )
+
 
 
 

@@ -25,6 +25,46 @@ data class DocumentEntity(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "graphite_version_snapshots")
+data class VersionSnapshotEntity(
+    @PrimaryKey val id: String,
+    val documentId: String,
+    val versionTag: String,
+    val titleIt: String,
+    val author: String,
+    val timestampLabel: String,
+    val layerCount: Int,
+    val nodeCount: Int,
+    val diffSummaryIt: String,
+    val serializedJson: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "graphite_offline_comments")
+data class CommentEntity(
+    @PrimaryKey val id: String,
+    val documentId: String,
+    val author: String,
+    val message: String,
+    val artboardX: Float,
+    val artboardY: Float,
+    val createdAtLabel: String,
+    val isResolved: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "graphite_scheduled_posts")
+data class ScheduledPostEntity(
+    @PrimaryKey val id: String,
+    val title: String,
+    val channel: String,
+    val dateTimeLabel: String,
+    val captionText: String,
+    val formatLabel: String,
+    val watermarkEnabled: Boolean,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 @Dao
 interface DocumentDao {
     @Query("SELECT * FROM graphite_documents ORDER BY updatedAt DESC")
@@ -41,9 +81,39 @@ interface DocumentDao {
 
     @Query("DELETE FROM graphite_documents WHERE id = :id")
     suspend fun deleteDocumentById(id: String)
+
+    // Version Snapshots
+    @Query("SELECT * FROM graphite_version_snapshots ORDER BY createdAt DESC")
+    fun getAllVersionSnapshots(): Flow<List<VersionSnapshotEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertVersionSnapshot(snapshot: VersionSnapshotEntity)
+
+    // Offline Comments
+    @Query("SELECT * FROM graphite_offline_comments ORDER BY createdAt DESC")
+    fun getAllOfflineComments(): Flow<List<CommentEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertOfflineComment(comment: CommentEntity)
+
+    // Scheduled Posts
+    @Query("SELECT * FROM graphite_scheduled_posts ORDER BY createdAt DESC")
+    fun getAllScheduledPosts(): Flow<List<ScheduledPostEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertScheduledPost(post: ScheduledPostEntity)
 }
 
-@Database(entities = [DocumentEntity::class], version = 1, exportSchema = false)
+@Database(
+    entities = [
+        DocumentEntity::class,
+        VersionSnapshotEntity::class,
+        CommentEntity::class,
+        ScheduledPostEntity::class
+    ],
+    version = 2,
+    exportSchema = false
+)
 abstract class GraphiteDatabase : RoomDatabase() {
     abstract fun documentDao(): DocumentDao
 

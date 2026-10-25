@@ -116,6 +116,7 @@ import com.example.engine.ProceduralEngine
 import com.example.model.ABVariantChoice
 import com.example.model.GraphiteLayer
 import com.example.model.LayerGeometryKind
+import com.example.model.StudioWorkspaceMode
 import com.example.model.ToolType
 import com.example.model.Vec2Point
 import com.example.ui.theme.DataArtboard
@@ -303,14 +304,9 @@ fun CanvasWorkspaceScreen(
                                     dragCurrentArtboard = startArtPos
                                 }
                                 ToolType.FREEHAND, ToolType.BRUSH -> {
+                                    // Patch v3.5: Defer seeding activeStrokePoints until single-finger drag is confirmed
+                                    // so 2-finger pinch-to-zoom never leaves an accidental ghost dot on canvas.
                                     activeStrokePoints.clear()
-                                    activeStrokePoints.add(
-                                        Vec2Point(
-                                            x = startArtPos.x,
-                                            y = startArtPos.y,
-                                            pressure = currentStylusPressure
-                                        )
-                                    )
                                 }
                                 else -> {}
                             }
@@ -407,6 +403,15 @@ fun CanvasWorkspaceScreen(
                                                 dragCurrentArtboard = artPos
                                             }
                                             ToolType.FREEHAND, ToolType.BRUSH -> {
+                                                if (activeStrokePoints.isEmpty()) {
+                                                    activeStrokePoints.add(
+                                                        Vec2Point(
+                                                            x = startArtPos.x,
+                                                            y = startArtPos.y,
+                                                            pressure = currentStylusPressure
+                                                        )
+                                                    )
+                                                }
                                                 val lastPt = activeStrokePoints.lastOrNull()
                                                 if (lastPt == null || hypot(artPos.x - lastPt.x, artPos.y - lastPt.y) >= 7f) {
                                                     activeStrokePoints.add(
@@ -922,7 +927,7 @@ fun CanvasWorkspaceScreen(
             culledInstancesCount = culledCounter
 
             // Phase 4 (TP-B4 — Gruppo B): Precision Calibrated Top (X) & Left (Y) Rulers + Selected Layer Projection Markers
-            if (uiState.showRulers) {
+            if (uiState.showRulers && uiState.workspaceMode == StudioWorkspaceMode.PRO) {
                 val rulerThick = 18.dp.toPx()
                 // Top X Ruler background
                 drawRect(
@@ -1105,22 +1110,29 @@ fun CanvasWorkspaceScreen(
                 }
             }
 
-            if (uiState.showLiveDagDrawer && selectedLayer != null) {
-                LiveDagOverlayDrawer(
-                    layer = selectedLayer,
+            if (uiState.workspaceMode != StudioWorkspaceMode.ZEN) {
+                if (uiState.showLiveDagDrawer && selectedLayer != null && uiState.workspaceMode == StudioWorkspaceMode.PRO) {
+                    LiveDagOverlayDrawer(
+                        layer = selectedLayer,
+                        viewModel = viewModel
+                    )
+                }
+
+                ContextualModeAndGuideStrip(
+                    uiState = uiState,
                     viewModel = viewModel
                 )
+
+                QuickLayerAndColorsBar(
+                    uiState = uiState,
+                    viewModel = viewModel
+                )
+
+                MobileToolDock(
+                    activeTool = uiState.activeTool,
+                    onSelectTool = { viewModel.selectTool(it) }
+                )
             }
-
-            QuickLayerAndColorsBar(
-                uiState = uiState,
-                viewModel = viewModel
-            )
-
-            MobileToolDock(
-                activeTool = uiState.activeTool,
-                onSelectTool = { viewModel.selectTool(it) }
-            )
         }
 
         // 7. Executive A/B Testing & Department Command Center Lab Modal
@@ -1139,6 +1151,12 @@ fun CanvasWorkspaceScreen(
                 onExecuteCommand = { cmdId -> viewModel.executeEnterpriseCommand(cmdId) }
             )
         }
+
+        // 9. Unified Creative Suite Sheet (Picsart, Canva, Figma, FigJam & Graphite Guide)
+        UnifiedCreativeSuiteModal(
+            uiState = uiState,
+            viewModel = viewModel
+        )
     }
 }
 
@@ -1339,8 +1357,32 @@ private fun TopCanvasControlPill(
                 }
             }
 
-            if (!uiState.compactTopBarMode) {
-                // Zoom - / + quick buttons (hidden in Variant B Compact One-Hand mode to reduce mis-taps)
+            // Patch v3.5: Adaptive Studio Workspace Mode Switch (Easy / Pro CAD / Zen)
+            val modeColor = when (uiState.workspaceMode) {
+                StudioWorkspaceMode.EASY -> DataGraphic
+                StudioWorkspaceMode.PRO -> DataVector
+                StudioWorkspaceMode.ZEN -> DataRaster
+            }
+            Surface(
+                color = modeColor.copy(alpha = 0.20f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .padding(horizontal = 4.dp)
+                    .border(1.dp, modeColor, RoundedCornerShape(8.dp))
+                    .clickable { viewModel.cycleWorkspaceMode() }
+                    .testTag("workspace_mode_chip")
+            ) {
+                Text(
+                    text = uiState.workspaceMode.badgeIt,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = modeColor,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+
+            if (!uiState.compactTopBarMode && uiState.workspaceMode == StudioWorkspaceMode.PRO) {
+                // Zoom - / + quick buttons (hidden in Easy/Zen or Compact mode to reduce mis-taps)
                 IconButton(
                     onClick = { viewModel.updateViewport(uiState.zoom * 0.8f, uiState.panX, uiState.panY) },
                     modifier = Modifier.size(36.dp)
@@ -1383,20 +1425,6 @@ private fun TopCanvasControlPill(
                 )
             }
 
-            // Wireframe Toggle
-            IconButton(
-                onClick = { viewModel.toggleWireframe() },
-                modifier = Modifier
-                    .size(40.dp)
-                    .testTag("wireframe_toggle_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CropFree,
-                    contentDescription = "Contorni Wireframe",
-                    tint = if (uiState.wireframeOverlay) DataRaster else GraphiteLightGray
-                )
-            }
-
             // Live Procedural Animation Play / Pause Toggle (60fps)
             IconButton(
                 onClick = { viewModel.togglePlayAnimation() },
@@ -1411,32 +1439,48 @@ private fun TopCanvasControlPill(
                 )
             }
 
-            // Before / After Split-Screen Comparison Curtain Toggle
-            IconButton(
-                onClick = { viewModel.toggleCompareSplitMode() },
-                modifier = Modifier
-                    .size(40.dp)
-                    .testTag("compare_split_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Compare,
-                    contentDescription = "Confronto Prima/Dopo",
-                    tint = if (uiState.compareSplitMode) DataGraphic else GraphiteLightGray
-                )
-            }
+            if (uiState.workspaceMode == StudioWorkspaceMode.PRO) {
+                // Wireframe Toggle (Pro Mode only)
+                IconButton(
+                    onClick = { viewModel.toggleWireframe() },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("wireframe_toggle_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CropFree,
+                        contentDescription = "Contorni Wireframe",
+                        tint = if (uiState.wireframeOverlay) DataRaster else GraphiteLightGray
+                    )
+                }
 
-            // Performance / Benchmark Telemetry HUD Toggle
-            IconButton(
-                onClick = { viewModel.togglePerformanceHud() },
-                modifier = Modifier
-                    .size(40.dp)
-                    .testTag("perf_hud_toggle_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Speed,
-                    contentDescription = "Telemetria Performance",
-                    tint = if (uiState.showPerformanceHud) DataGraphic else GraphiteLightGray
-                )
+                // Before / After Split-Screen Comparison Curtain Toggle (Pro Mode only)
+                IconButton(
+                    onClick = { viewModel.toggleCompareSplitMode() },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("compare_split_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Compare,
+                        contentDescription = "Confronto Prima/Dopo",
+                        tint = if (uiState.compareSplitMode) DataGraphic else GraphiteLightGray
+                    )
+                }
+
+                // Performance / Benchmark Telemetry HUD Toggle (Pro Mode only)
+                IconButton(
+                    onClick = { viewModel.togglePerformanceHud() },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("perf_hud_toggle_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Speed,
+                        contentDescription = "Telemetria Performance",
+                        tint = if (uiState.showPerformanceHud) DataGraphic else GraphiteLightGray
+                    )
+                }
             }
 
             // Phase 5 (TP-D5): Universal Enterprise Command Palette Button
@@ -1458,27 +1502,29 @@ private fun TopCanvasControlPill(
                 )
             }
 
-            // Executive A/B Testing & Department Command Center Badge
-            Surface(
-                color = if (uiState.abRolloutApplied) DataGraphic.copy(alpha = 0.24f) else DataVector.copy(alpha = 0.20f),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier
-                    .padding(horizontal = 2.dp)
-                    .border(
-                        width = 1.dp,
+            if (uiState.workspaceMode == StudioWorkspaceMode.PRO) {
+                // Executive A/B Testing & Department Command Center Badge
+                Surface(
+                    color = if (uiState.abRolloutApplied) DataGraphic.copy(alpha = 0.24f) else DataVector.copy(alpha = 0.20f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 2.dp)
+                        .border(
+                            width = 1.dp,
+                            color = if (uiState.abRolloutApplied) DataGraphic else DataVector,
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .clickable { viewModel.setABLabSheetVisible(true) }
+                        .testTag("ab_lab_button")
+                ) {
+                    Text(
+                        text = if (uiState.abRolloutApplied) "A/B ✓" else "A/B Lab",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
                         color = if (uiState.abRolloutApplied) DataGraphic else DataVector,
-                        shape = RoundedCornerShape(8.dp)
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
                     )
-                    .clickable { viewModel.setABLabSheetVisible(true) }
-                    .testTag("ab_lab_button")
-            ) {
-                Text(
-                    text = if (uiState.abRolloutApplied) "A/B ✓" else "A/B Lab",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = if (uiState.abRolloutApplied) DataGraphic else DataVector,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                )
+                }
             }
 
             // Export SVG / PNG / XML / Compose / Tokens Button
@@ -1981,6 +2027,23 @@ private fun QuickLayerAndColorsBar(
                                 modifier = Modifier.testTag("toggle_cusp_mode_chip")
                             )
                         }
+                    } else if (selectedLayer.kind != LayerGeometryKind.TEXT) {
+                        // Patch v3.5: 1-Tap Bake Primitive / DAG to Editable Cubic Bézier Path
+                        AssistChip(
+                            onClick = { viewModel.bakeSelectedLayerToBezierPath() },
+                            label = {
+                                Text(
+                                    text = "✒️ Converti in Tracciato",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = DataRaster
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = GraphiteDarkGray,
+                                labelColor = DataRaster
+                            ),
+                            modifier = Modifier.testTag("hud_bake_to_path_chip")
+                        )
                     }
 
                     AssistChip(

@@ -302,8 +302,197 @@ class ExampleRobolectricTest {
         assertTrue(w3cDesignTokensJson.contains("https://tr.designtokens.org/format/"))
         assertTrue(w3cDesignTokensJson.contains("colorTokens"))
         assertTrue(w3cDesignTokensJson.contains("3.0-enterprise"))
+
+        // Patch v3.5 (Zero-Defect Audit Fixes):
+        // 1. Verify Rounded Rectangle (cornerRadius > 0) exports exact quadratic curves (`Q` in XML, `quadTo` in Compose .kt)
+        vm.addQuickLayer(com.example.model.LayerGeometryKind.RECTANGLE)
+        val rectLayer = vm.uiState.value.selectedLayer!!
+        vm.updateLayer(rectLayer.id) { it.copy(cornerRadius = 24f) }
+        val xmlWithRoundedRect = ProceduralEngine.exportToAndroidVectorDrawable(vm.uiState.value.document)
+        assertTrue(xmlWithRoundedRect.contains(" Q "))
+        val composeWithRoundedRect = ProceduralEngine.exportToComposeImageVector(vm.uiState.value.document)
+        assertTrue(composeWithRoundedRect.contains("quadTo("))
+
+        // 2. Verify selecting ToolType.PATH or baking converts any primitive (Ellipse/Rectangle) into an editable BEZIER_PATH
+        vm.addQuickLayer(com.example.model.LayerGeometryKind.ELLIPSE)
+        assertEquals(com.example.model.LayerGeometryKind.ELLIPSE, vm.uiState.value.selectedLayer!!.kind)
+        vm.selectTool(com.example.model.ToolType.PATH)
+        val bakedEllipse = vm.uiState.value.selectedLayer!!
+        assertEquals(com.example.model.LayerGeometryKind.BEZIER_PATH, bakedEllipse.kind)
+        assertEquals(4, bakedEllipse.points.size)
+        assertTrue(bakedEllipse.closedPath)
+
+        // 3. Verify Multi-Layer Pathfinder Boolean subtraction (`combineSelectedWithBelowBoolean`)
+        val countBeforeBool = vm.uiState.value.document.layers.size
+        vm.combineSelectedWithBelowBoolean(opMode = 0)
+        assertEquals(countBeforeBool - 1, vm.uiState.value.document.layers.size)
+        assertTrue(vm.uiState.value.selectedLayer!!.nodes.any { it.type == com.example.model.ProceduralNodeType.BOOLEAN_OP })
+
+        // 4. Verify Adaptive Studio Workspace Mode cycling (PRO -> EASY -> ZEN -> PRO)
+        assertEquals(com.example.model.StudioWorkspaceMode.PRO, vm.uiState.value.workspaceMode)
+        vm.cycleWorkspaceMode()
+        assertEquals(com.example.model.StudioWorkspaceMode.EASY, vm.uiState.value.workspaceMode)
+        assertTrue(!vm.uiState.value.showRulers)
+        vm.cycleWorkspaceMode()
+        assertEquals(com.example.model.StudioWorkspaceMode.ZEN, vm.uiState.value.workspaceMode)
+        vm.cycleWorkspaceMode()
+        assertEquals(com.example.model.StudioWorkspaceMode.PRO, vm.uiState.value.workspaceMode)
+        assertTrue(vm.uiState.value.showRulers)
+    }
+
+    @Test
+    fun unifiedCreativeSuite_validatesPicsart_Canva_Figma_FigJam_andDeterministicGraphiteGuide() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = GraphiteDatabase.getInstance(context)
+        val repo = GraphiteRepository(db.documentDao())
+        val vm = GraphiteViewModel(repo)
+
+        // 1. Test 3-State Graphite Guide Toggle (ACTIVE -> HIDDEN_PTT -> OFF -> ACTIVE)
+        assertEquals(com.example.model.GraphiteGuideState.ACTIVE, vm.uiState.value.guideState)
+        vm.cycleGraphiteGuideState()
+        assertEquals(com.example.model.GraphiteGuideState.HIDDEN_PTT, vm.uiState.value.guideState)
+        vm.cycleGraphiteGuideState()
+        assertEquals(com.example.model.GraphiteGuideState.OFF, vm.uiState.value.guideState)
+        vm.cycleGraphiteGuideState()
+        assertEquals(com.example.model.GraphiteGuideState.ACTIVE, vm.uiState.value.guideState)
+
+        // 2. Test Deterministic Rule-Based Command Parser (Verb + Object + Modifiers)
+        vm.executeGuideCommand("come rimuovo lo sfondo?")
+        val bgRes = vm.uiState.value.lastGuideResolution
+        assertNotNull(bgRes)
+        assertEquals(com.example.engine.GuideActionVerb.REMOVE_ERASE, bgRes!!.matchedVerb)
+        assertEquals(com.example.engine.GuideTargetObject.BACKGROUND, bgRes.matchedObject)
+        assertEquals(com.example.model.SuiteSubPanel.PHOTO_RETOUCH_BG, vm.uiState.value.activeSuiteSubPanel)
+
+        vm.executeGuideCommand("crea un collage a cuore")
+        val heartRes = vm.uiState.value.lastGuideResolution!!
+        assertEquals(com.example.engine.GuideTargetObject.COLLAGE_STICKER, heartRes.matchedObject)
+
+        vm.executeGuideCommand("unisci due forme")
+        val boolRes = vm.uiState.value.lastGuideResolution!!
+        assertEquals(com.example.engine.GuideTargetObject.VECTOR_PATH, boolRes.matchedObject)
+
+        // 3. Test Picsart Engine: Crop Ratio 4:5, Tone Curve S-Contrast, Retouch & LUT Charcoal Sketch
+        vm.applyCropRatioToArtboard(com.example.model.PhotoCropAspectRatio.RATIO_4_5, straightenDeg = 3.5f)
+        assertEquals(3.5f, vm.uiState.value.photoAdjustments.horizonStraightenDeg, 0.01f)
+        vm.applyToneCurvePreset("S_CONTRAST")
+        assertEquals(0.16f, vm.uiState.value.photoAdjustments.rgbCurvePoints[1].outputY, 0.01f)
+
+        vm.updateRetouchAndBgState(
+            com.example.model.RetouchAndBgState(
+                activeMode = com.example.model.RetouchAlgorithmMode.GRAPH_CUT_CONTOUR,
+                tolerance = 35f,
+                skinSmoothIntensity = 0.5f,
+                teethWhitenIntensity = 0.4f,
+                redEyeCorrected = true
+            )
+        )
+        assertEquals(
+            com.example.model.RetouchAlgorithmMode.GRAPH_CUT_CONTOUR,
+            vm.uiState.value.retouchState.activeMode
+        )
+
+        vm.applyLutAndEffects(
+            com.example.model.FilterAndEffectsState(
+                activeLut = com.example.model.PhotoFilterLutPreset.CHARCOAL_SKETCH,
+                lutIntensity = 0.9f
+            )
+        )
+        assertEquals(
+            com.example.model.PhotoFilterLutPreset.CHARCOAL_SKETCH,
+            vm.uiState.value.filterEffectsState.activeLut
+        )
+
+        // Generate 4-cell Heart Collage & insert local sticker
+        vm.generateCollageOnCanvas(
+            com.example.model.CollageComposerState(
+                cellCount = 4,
+                shapeMask = com.example.model.CollageShapeMask.HEART
+            )
+        )
+        assertEquals(4, vm.uiState.value.document.layers.size)
+        vm.insertLocalStickerOnCanvas(com.example.engine.PhotoAndVideoEngine.PREINSTALLED_LOCAL_STICKERS.first())
+        assertEquals(5, vm.uiState.value.document.layers.size)
+
+        // Video Timeline split & MP4 export
+        val initialClipsCount = vm.uiState.value.videoTimeline.clips.size
+        vm.splitSelectedVideoClip()
+        assertEquals(initialClipsCount + 1, vm.uiState.value.videoTimeline.clips.size)
+        vm.exportLocalVideoMp4()
+        assertTrue(vm.uiState.value.lastVideoExportSummary.orEmpty().contains("MP4"))
+
+        // 4. Test Canva Engine: Templates, Brand Kit 1-Tap, Magic Resize, Presentations & Scheduler
+        val firstTemplate = com.example.engine.PhotoAndVideoEngine.PREINSTALLED_CANVA_TEMPLATES.first()
+        vm.applyCanvaTemplate(firstTemplate)
+        assertEquals(firstTemplate.category.defaultW, vm.uiState.value.document.artboardWidth)
+
+        vm.applyLocalBrandKitToDocument()
+        vm.toggleBrandStyleLock()
+        assertTrue(vm.uiState.value.brandKit.isStyleLocked)
+
+        vm.applyMagicResize(1080, 1920, "Instagram Story 9:16")
+        assertEquals(1080, vm.uiState.value.document.artboardWidth)
+        assertEquals(1920, vm.uiState.value.document.artboardHeight)
+
+        val slidesBefore = vm.uiState.value.presentationSlides.size
+        vm.addPresentationSlide("Slide Roadmap Q4", "Note relatore offline")
+        assertEquals(slidesBefore + 1, vm.uiState.value.presentationSlides.size)
+
+        val postsBefore = vm.uiState.value.scheduledPosts.size
+        vm.scheduleLocalSocialPost("Campagna Design", "Instagram", "2026-07-01 18:00", "Lancio Prodotto", true)
+        assertEquals(postsBefore + 1, vm.uiState.value.scheduledPosts.size)
+
+        // 5. Test Figma & FigJam Engine: Device Frame, Auto Layout, Components, Prototype, Comments, Version Diff, CSS3 & FigJam
+        vm.applyDeviceFramePreset(com.example.model.DeviceFramePreset.IPHONE_16_PRO)
+        assertEquals(786, vm.uiState.value.document.artboardWidth)
+
+        vm.applyFigmaAutoLayout(
+            com.example.model.FigmaAutoLayoutState(
+                enabled = true,
+                direction = com.example.model.AutoLayoutDirection.VERTICAL_COLUMN,
+                spacingPx = 24f,
+                paddingHorizontalPx = 32f,
+                paddingVerticalPx = 32f
+            )
+        )
+        assertTrue(vm.uiState.value.autoLayoutState.enabled)
+
+        val masterComp = vm.uiState.value.masterComponents.first()
+        val layersBeforeComp = vm.uiState.value.document.layers.size
+        vm.instantiateFigmaComponent(masterComp, com.example.model.ComponentVariantState.HOVER)
+        assertEquals(layersBeforeComp + 1, vm.uiState.value.document.layers.size)
+
+        vm.addPrototypeLink(
+            "Schermata Pagamento",
+            com.example.model.PrototypeTriggerType.ON_TAP,
+            com.example.model.PrototypeTransitionType.SMART_ANIMATE
+        )
+        vm.triggerPrototypeNavigation("Schermata Pagamento")
+        assertEquals("Schermata Pagamento", vm.uiState.value.activePrototypeScreenName)
+
+        vm.addOfflineComment("Marta B.", "Verificare spaziatura 24px")
+        assertEquals("Verificare spaziatura 24px", vm.uiState.value.offlineComments.first().message)
+
+        vm.saveVersionSnapshot("v2.0 — Suite Unificata")
+        assertNotNull(vm.uiState.value.activeDiffReport)
+        assertTrue(vm.uiState.value.activeDiffReport.orEmpty().contains("Visual Diff"))
+
+        val cssHandoff = com.example.engine.PhotoAndVideoEngine.exportToCssHandoff(
+            vm.uiState.value.document,
+            vm.uiState.value.selectedLayer
+        )
+        assertTrue(cssHandoff.contains("background-color:"))
+
+        val stickiesBefore = vm.uiState.value.figJamStickies.size
+        vm.addFigJamStickyNote("Brainstorming Architettura Offline")
+        assertEquals(stickiesBefore + 1, vm.uiState.value.figJamStickies.size)
+        val newStickyId = vm.uiState.value.figJamStickies.first().id
+        vm.voteFigJamSticky(newStickyId)
+        assertEquals(2, vm.uiState.value.figJamStickies.first().votes)
     }
 }
+
+
 
 
 

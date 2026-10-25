@@ -483,6 +483,49 @@ private fun LayerInspectorCard(
                 }
             }
 
+            // Patch v3.5: Pathfinder Multi-Layer Booleans & Bake to Editable Bézier Path
+            Text(
+                text = "Pathfinder Booleano & Conversione in Tracciato Bézier",
+                style = MaterialTheme.typography.labelLarge,
+                color = DataRaster
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .testTag("pathfinder_boolean_bar")
+            ) {
+                if (layer.kind != LayerGeometryKind.TEXT && layer.kind != LayerGeometryKind.BEZIER_PATH) {
+                    AssistChip(
+                        onClick = { viewModel.bakeSelectedLayerToBezierPath() },
+                        label = { Text("✒️ Converti in Tracciato", style = MaterialTheme.typography.labelSmall) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = GraphiteDarkGray,
+                            labelColor = DataRaster
+                        ),
+                        modifier = Modifier.testTag("inspector_bake_path_chip")
+                    )
+                }
+                val boolActions = listOf(
+                    0 to "⊖ Sottrai (Fora)",
+                    1 to "⊕ Unisci",
+                    2 to "⊗ Interseca",
+                    3 to "⊘ Escludi XOR"
+                )
+                for ((opCode, opLabel) in boolActions) {
+                    AssistChip(
+                        onClick = { viewModel.combineSelectedWithBelowBoolean(opCode) },
+                        label = { Text(opLabel, style = MaterialTheme.typography.labelSmall) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = GraphiteDarkGray,
+                            labelColor = GraphiteNearWhite
+                        ),
+                        modifier = Modifier.testTag("pathfinder_op_$opCode")
+                    )
+                }
+            }
+
             // Geometry & Transform Section
             Text(
                 text = "Trasformazione & Geometria Parametrica",
