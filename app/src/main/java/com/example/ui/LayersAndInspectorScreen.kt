@@ -3,6 +3,7 @@ package com.example.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,8 +54,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.example.model.ArtboardAlignment
 import com.example.model.BlendModeType
 import com.example.model.GraphiteLayer
 import com.example.model.LayerGeometryKind
@@ -449,6 +452,37 @@ private fun LayerInspectorCard(
 
             HorizontalDivider(color = GraphiteDimGray)
 
+            // Quick Artboard Alignment & Multi-Layer Distribution Bar (Fase 3 TP-B3 / TP-C3)
+            Text(
+                text = "Allineamento Rapido & Distribuzione su Tavola",
+                style = MaterialTheme.typography.labelLarge,
+                color = DataGraphic
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .testTag("artboard_alignment_bar")
+            ) {
+                for (align in ArtboardAlignment.entries) {
+                    AssistChip(
+                        onClick = { viewModel.alignSelectedLayer(align) },
+                        label = {
+                            Text(
+                                text = align.shortLabelIt,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = GraphiteDarkGray,
+                            labelColor = GraphiteNearWhite
+                        ),
+                        modifier = Modifier.testTag("align_chip_${align.name.lowercase()}")
+                    )
+                }
+            }
+
             // Geometry & Transform Section
             Text(
                 text = "Trasformazione & Geometria Parametrica",
@@ -686,6 +720,9 @@ private fun InspectorSliderRow(
     color: Color,
     onValueChange: (Float, Boolean) -> Unit
 ) {
+    val span = (range.endInclusive - range.start).coerceAtLeast(1f)
+    val microStep = if (span <= 20f) 1f else if (span <= 180f) 2f else 5f
+
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -693,11 +730,73 @@ private fun InspectorSliderRow(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(text = label, style = MaterialTheme.typography.bodySmall, color = GraphiteLightGray)
-            Text(
-                text = "${value.roundToInt()}$unit",
-                style = MaterialTheme.typography.labelMedium,
-                color = color
-            )
+
+            // Phase 5 (TP-D5 — Gruppo D): Enterprise Precision Numeric Scrubber & Micro-Stepper
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Surface(
+                    color = GraphiteDarkGray,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier
+                        .clickable {
+                            val next = (value - microStep).coerceIn(range.start, range.endInclusive)
+                            onValueChange(next, true)
+                        }
+                ) {
+                    Text(
+                        text = "−",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = GraphiteNearWhite,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                    )
+                }
+
+                Surface(
+                    color = GraphiteNearBlack,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier
+                        .border(1.dp, color.copy(alpha = 0.65f), RoundedCornerShape(6.dp))
+                        .pointerInput(range) {
+                            var scrubVal = value
+                            detectHorizontalDragGestures(
+                                onDragStart = { scrubVal = value },
+                                onDragEnd = { onValueChange(scrubVal, true) },
+                                onHorizontalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    val delta = (dragAmount / 180f) * span
+                                    scrubVal = (scrubVal + delta).coerceIn(range.start, range.endInclusive)
+                                    onValueChange(scrubVal, false)
+                                }
+                            )
+                        }
+                ) {
+                    Text(
+                        text = "⟷ ${value.roundToInt()}$unit",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = color,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                }
+
+                Surface(
+                    color = GraphiteDarkGray,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier
+                        .clickable {
+                            val next = (value + microStep).coerceIn(range.start, range.endInclusive)
+                            onValueChange(next, true)
+                        }
+                ) {
+                    Text(
+                        text = "+",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = GraphiteNearWhite,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                    )
+                }
+            }
         }
         Slider(
             value = value.coerceIn(range.start, range.endInclusive),

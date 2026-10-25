@@ -229,6 +229,13 @@ fun GraphiteMobileApp() {
                 onCopiedToast = { msg ->
                     viewModel.showToast(msg)
                     viewModel.setExportDialogVisible(false)
+                },
+                onImportSvg = { svgStr, merge ->
+                    viewModel.importSvgDocument(svgStr, mergeIntoCurrent = merge)
+                },
+                onRoundTripSvg = {
+                    viewModel.roundTripCurrentDocumentViaSvg()
+                    viewModel.setExportDialogVisible(false)
                 }
             )
         }

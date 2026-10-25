@@ -212,7 +212,7 @@ enum class ProceduralNodeType(
         outputType = NodeDataType.VECTOR,
         paramSpecs = listOf(
             NodeParamSpec("opMode", "Modo (0=Sottrai, 1=Unisci, 2=Interseca, 3=XOR)", 0f, 3f, 0f, ""),
-            NodeParamSpec("cutterShape", "Sagoma (0=Cerchio, 1=Rett, 2=Esagono)", 0f, 2f, 0f, ""),
+            NodeParamSpec("cutterShape", "Sagoma (0=Cerchio, 1=Rett, 2=Rombo, 3=Livello Sotto)", 0f, 3f, 0f, ""),
             NodeParamSpec("offsetX", "Offset Taglio X", -180f, 180f, 0f, "px"),
             NodeParamSpec("offsetY", "Offset Taglio Y", -180f, 180f, 0f, "px"),
             NodeParamSpec("scaleRatio", "Scala Sagoma", 0.2f, 1.4f, 0.55f, "×")
@@ -267,7 +267,8 @@ data class Vec2Point(
     val handleInY: Float = y,
     val handleOutX: Float = x,
     val handleOutY: Float = y,
-    val pressure: Float = 1.0f
+    val pressure: Float = 1.0f,
+    val smooth: Boolean = true
 )
 
 data class GraphiteLayer(
@@ -297,6 +298,7 @@ data class GraphiteLayer(
     val textContent: String = "Graphite",
     val fontSize: Float = 48f,
     val brushHardness: Float = 0.7f,
+    val closedPath: Boolean = false,
     val points: List<Vec2Point> = emptyList(),
     val nodes: List<ProceduralNode> = emptyList()
 )
@@ -411,4 +413,84 @@ data class SmartGuideLine(
     val positionArtboard: Float,
     val label: String
 )
+
+enum class ArtboardAlignment(val labelIt: String, val shortLabelIt: String) {
+    ALIGN_LEFT("Allinea a Sinistra", "↤ Sin."),
+    ALIGN_CENTER_H("Centra Orizzontalmente", "↔ Centro X"),
+    ALIGN_RIGHT("Allinea a Destra", "↦ Des."),
+    ALIGN_TOP("Allinea in Alto", "↥ Alto"),
+    ALIGN_CENTER_V("Centra Verticalmente", "↕ Centro Y"),
+    ALIGN_BOTTOM("Allinea in Basso", "↧ Basso"),
+    DISTRIBUTE_H("Distribuisci Orizzontalmente", "⇔ Distr. X"),
+    DISTRIBUTE_V("Distribuisci Verticalmente", "⇕ Distr. Y")
+}
+
+data class EnterpriseCommandItem(
+    val id: String,
+    val divisionBadge: String,
+    val titleIt: String,
+    val subtitleIt: String,
+    val shortcutHint: String
+)
+
+val ENTERPRISE_COMMAND_CATALOG = listOf(
+    EnterpriseCommandItem(
+        id = "cmd_align_center",
+        divisionBadge = "GRUPPO B • CAD",
+        titleIt = "Centra Livello sulla Tavola (X & Y)",
+        subtitleIt = "Allinea istantaneamente il livello selezionato al centro geometrico (540, 540)",
+        shortcutHint = "⇧C"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_distribute_h",
+        divisionBadge = "GRUPPO B • CAD",
+        titleIt = "Distribuisci Livelli Orizzontalmente",
+        subtitleIt = "Calcola passo equidistante tra tutti i livelli visibili",
+        shortcutHint = "⇧H"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_macro_mandala",
+        divisionBadge = "GRUPPO C • DAG",
+        titleIt = "Macro: Mandala Geometrico 12×",
+        subtitleIt = "Applica Ripetizione Radiale + Espandi Tracciato + Bagliore",
+        shortcutHint = "M1"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_macro_boolean_gear",
+        divisionBadge = "GRUPPO C • DAG",
+        titleIt = "Macro: Ingranaggio Booleano Skia",
+        subtitleIt = "Sottrazione Path.Op + Raggiera 8× + Ombra Tecnica",
+        shortcutHint = "M2"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_macro_sticker_outline",
+        divisionBadge = "GRUPPO C • DAG",
+        titleIt = "Macro: Sticker Outline & Tratteggio CAD",
+        subtitleIt = "Espansione contorno + Tratteggio procedurale + Ombra netta",
+        shortcutHint = "M3"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_toggle_perf_120hz",
+        divisionBadge = "GRUPPO A • 120Hz",
+        titleIt = "Attiva/Disattiva Telemetria Frustum & Cache 120Hz",
+        subtitleIt = "Mostra frame-time, istanze scartate (Frustum Culling) e Cache Hit-Rate",
+        shortcutHint = "F12"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_export_handoff",
+        divisionBadge = "GRUPPO E • DEV",
+        titleIt = "Apri Enterprise Dev-Handoff (XML / Compose / Tokens)",
+        subtitleIt = "Genera codice Android VectorDrawable, Compose ImageVector e W3C Tokens",
+        shortcutHint = "⌘E"
+    ),
+    EnterpriseCommandItem(
+        id = "cmd_rollout_ab",
+        divisionBadge = "GRUPPO D • UX",
+        titleIt = "Applica Rollout 100% Varianti Enterprise",
+        subtitleIt = "Attiva Smart Guides Laser, Lavagna 2D DAG e TopBar Compatta",
+        shortcutHint = "⌘R"
+    )
+)
+
+
 

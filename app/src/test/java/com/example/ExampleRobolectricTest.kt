@@ -127,6 +127,33 @@ class ExampleRobolectricTest {
         val bezierSvg = ProceduralEngine.exportToSvg(vm.uiState.value.document)
         assertTrue(bezierSvg.contains(" C "))
 
+        // Phase 2 (TP-A2 & TP-B2): Test C0 Independent Cusp Handles & Closed Bézier Path with SVG 'Z'
+        vm.toggleBezierVerticesSmoothMode()
+        assertTrue(vm.uiState.value.selectedLayer!!.points.all { !it.smooth })
+        val cuspAnchor = vm.uiState.value.selectedLayer!!.points[1]
+        val prevInX = cuspAnchor.handleInX
+        vm.moveBezierHandle(
+            pointIndex = 1,
+            isHandleIn = false,
+            newX = cuspAnchor.x + 110f,
+            newY = cuspAnchor.y + 35f,
+            isFinished = true
+        )
+        val afterCusp = vm.uiState.value.selectedLayer!!.points[1]
+        assertEquals(cuspAnchor.x + 110f, afterCusp.handleOutX, 0.5f)
+        // C0 cusp mode: opposite handleIn must remain unchanged!
+        assertEquals(prevInX, afterCusp.handleInX, 0.5f)
+
+        vm.toggleBezierClosedPath()
+        assertTrue(vm.uiState.value.selectedLayer!!.closedPath)
+        assertTrue(vm.uiState.value.selectedLayer!!.hasFill)
+        val closedBezierSvg = ProceduralEngine.exportToSvg(vm.uiState.value.document)
+        assertTrue(closedBezierSvg.contains(" Z\""))
+
+        // Phase 2 (TP-C2): Test Live Split-Workspace DAG Drawer toggle
+        vm.toggleLiveDagDrawer()
+        assertTrue(vm.uiState.value.showLiveDagDrawer)
+
         // Test Dynamic Magnetic Smart Guides during layer drag near Artboard center
         val curSel = vm.uiState.value.selectedLayer!!
         val artCenterX = vm.uiState.value.document.artboardWidth / 2f
@@ -153,6 +180,130 @@ class ExampleRobolectricTest {
         // Render document with Boolean Path.op and Cubic Bézier to Bitmap
         val gearBmp = ProceduralEngine.renderToBitmap(vm.uiState.value.document, targetSide = 128)
         assertEquals(128, gearBmp.width)
+
+        // Phase 3 (TP-B3): Quick Artboard Alignment & Multi-Layer Distribution
+        vm.alignSelectedLayer(com.example.model.ArtboardAlignment.ALIGN_LEFT)
+        val alignedLeft = vm.uiState.value.selectedLayer!!
+        assertEquals(alignedLeft.width / 2f, alignedLeft.x, 0.5f)
+
+        vm.alignSelectedLayer(com.example.model.ArtboardAlignment.ALIGN_BOTTOM)
+        val alignedBottom = vm.uiState.value.selectedLayer!!
+        assertEquals(
+            vm.uiState.value.document.artboardHeight - alignedBottom.height / 2f,
+            alignedBottom.y,
+            0.5f
+        )
+
+        vm.alignSelectedLayer(com.example.model.ArtboardAlignment.DISTRIBUTE_H)
+        assertTrue(vm.uiState.value.statusToast.orEmpty().contains("Distribuisci"))
+
+        // Phase 3 (TP-A3 & TP-C3): Bidirectional SVG 1.1 Import & Cubic Bézier / Stroke-Dash / BlendMode Round-Trip
+        val sampleSvg = """
+            <svg viewBox="0 0 1080 1080" width="1080" height="1080">
+              <rect width="100%" height="100%" fill="#161920" />
+              <rect x="120" y="140" width="240" height="160" rx="18" fill="#68C587" stroke="#FBF9EB" stroke-width="4.0" />
+              <path d="M 300.0 500.0 C 300.0 320.0, 780.0 320.0, 780.0 500.0 C 780.0 680.0, 300.0 680.0, 300.0 500.0 Z" fill="#65BBE5" stroke="#FBF9EB" stroke-width="6.0" stroke-dasharray="20,12" stroke-dashoffset="5" style="mix-blend-mode: screen;" />
+            </svg>
+        """.trimIndent()
+
+        vm.importSvgDocument(sampleSvg, mergeIntoCurrent = false)
+        val importedDoc = vm.uiState.value.document
+        assertEquals(2, importedDoc.layers.size)
+        val importedBezier = importedDoc.layers.last()
+        assertEquals(com.example.model.LayerGeometryKind.BEZIER_PATH, importedBezier.kind)
+        assertTrue(importedBezier.closedPath)
+        assertEquals(2, importedBezier.points.size)
+        assertEquals(320f, importedBezier.points[0].handleOutY, 0.5f)
+        assertEquals(680f, importedBezier.points[0].handleInY, 0.5f)
+        assertEquals(com.example.model.BlendModeType.SCREEN, importedBezier.blendMode)
+        assertTrue(importedBezier.nodes.any { it.type == com.example.model.ProceduralNodeType.STROKE_DASH })
+
+        // Verify Round-Trip SVG Live preserves layers and attributes
+        val reExportedSvg = ProceduralEngine.exportToSvg(importedDoc)
+        assertTrue(reExportedSvg.contains("mix-blend-mode: screen"))
+        assertTrue(reExportedSvg.contains("stroke-dasharray=\"20,12\""))
+        vm.roundTripCurrentDocumentViaSvg()
+        assertEquals(2, vm.uiState.value.document.layers.size)
+    }
+
+    @Test
+    fun enterpriseRoadmap_phases4To6_validatesFrustumCulling_edgeSmartSnap_commandPalette_andDevHandoffExporters() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = GraphiteDatabase.getInstance(context)
+        val repo = GraphiteRepository(db.documentDao())
+        val vm = GraphiteViewModel(repo)
+
+        // Phase 4 (TP-A4 — Gruppo A): Viewport Frustum Culling & DAG Cache Hit-Rate Telemetry
+        vm.applyProceduralPresetRecipe("stress_benchmark")
+        val stressLayer = vm.uiState.value.selectedLayer!!
+        val allInstances = ProceduralEngine.evaluateLayer(stressLayer)
+        assertEquals(48, allInstances.size)
+
+        // Second evaluation hits LRU cache
+        val cachedInstances = ProceduralEngine.evaluateLayer(stressLayer)
+        assertEquals(48, cachedInstances.size)
+        assertTrue(ProceduralEngine.getCacheHitRatePercent() > 0)
+
+        // Test Frustum Culler on a tight sub-quadrant viewport (-200..0, -200..0)
+        val (visibleInCorner, culledCount) = ProceduralEngine.cullInstancesForViewport(
+            instances = allInstances,
+            minArtX = -500f,
+            minArtY = -500f,
+            maxArtX = -100f,
+            maxArtY = -100f
+        )
+        assertEquals(48, visibleInCorner.size + culledCount)
+        assertTrue(culledCount > 0)
+
+        // Phase 4 (TP-B4 — Gruppo B): CAD Edge-to-Edge Magnetic Smart Guides
+        val doc = vm.uiState.value.document
+        val targetRefLayer = doc.layers.first { it.id != stressLayer.id && it.visible }
+        val targetLeftEdge = targetRefLayer.x - targetRefLayer.width / 2f
+        val desiredCenterForLeftSnap = targetLeftEdge + stressLayer.width / 2f
+        vm.moveSelectedLayerBy(
+            dx = (desiredCenterForLeftSnap - stressLayer.x) + 3f,
+            dy = 0f,
+            isFinished = false
+        )
+        assertTrue(vm.uiState.value.activeSmartGuides.isNotEmpty())
+        assertEquals(desiredCenterForLeftSnap, vm.uiState.value.selectedLayer!!.x, 0.5f)
+        vm.moveSelectedLayerBy(0f, 0f, isFinished = true)
+
+        // Phase 5 (TP-C5 & TP-D5 — Gruppi C & D): Universal Command Palette, Node Bypass & Sticker Outline Macro
+        vm.setCommandPaletteVisible(true)
+        assertTrue(vm.uiState.value.showCommandPalette)
+        vm.executeEnterpriseCommand("cmd_macro_sticker_outline")
+        assertTrue(!vm.uiState.value.showCommandPalette)
+        val stickerLayer = vm.uiState.value.selectedLayer!!
+        assertEquals(3, stickerLayer.nodes.size)
+
+        // Mute/Bypass first node (OFFSET_PATH) and verify non-destructive DAG re-evaluation
+        val firstNodeId = stickerLayer.nodes.first().id
+        vm.toggleNodeEnabled(stickerLayer.id, firstNodeId)
+        val bypassedNodeLayer = vm.uiState.value.selectedLayer!!
+        assertTrue(!bypassedNodeLayer.nodes.first().enabled)
+
+        // Execute 1-tap Center Alignment via Enterprise Command Palette
+        vm.executeEnterpriseCommand("cmd_align_center")
+        assertEquals(doc.artboardWidth / 2f, vm.uiState.value.selectedLayer!!.x, 0.5f)
+        assertEquals(doc.artboardHeight / 2f, vm.uiState.value.selectedLayer!!.y, 0.5f)
+
+        // Phase 6 (TP-E6 — Gruppo E): Multi-Format Enterprise Developer Handoff Pipeline
+        val currentDoc = vm.uiState.value.document
+        val vectorDrawableXml = ProceduralEngine.exportToAndroidVectorDrawable(currentDoc)
+        assertTrue(vectorDrawableXml.contains("<vector xmlns:android=\"http://schemas.android.com/apk/res/android\""))
+        assertTrue(vectorDrawableXml.contains("android:pathData=\"M "))
+
+        val composeImageVectorKt = ProceduralEngine.exportToComposeImageVector(currentDoc)
+        assertTrue(composeImageVectorKt.contains("ImageVector.Builder("))
+        assertTrue(composeImageVectorKt.contains("moveTo("))
+
+        val w3cDesignTokensJson = ProceduralEngine.exportToW3CDesignTokens(currentDoc)
+        assertTrue(w3cDesignTokensJson.contains("https://tr.designtokens.org/format/"))
+        assertTrue(w3cDesignTokensJson.contains("colorTokens"))
+        assertTrue(w3cDesignTokensJson.contains("3.0-enterprise"))
     }
 }
+
+
 

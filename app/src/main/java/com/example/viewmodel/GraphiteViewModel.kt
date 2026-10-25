@@ -8,6 +8,7 @@ import com.example.engine.DemoArtworkFactory
 import com.example.engine.ProceduralEngine
 import com.example.model.ABExperimentItem
 import com.example.model.ABVariantChoice
+import com.example.model.ArtboardAlignment
 import com.example.model.GraphiteDocumentModel
 import com.example.model.GraphiteLayer
 import com.example.model.LayerGeometryKind
@@ -84,6 +85,8 @@ data class EditorUiState(
     val showExportDialog: Boolean = false,
     val showNewDocDialog: Boolean = false,
     val showABLabSheet: Boolean = false,
+    val showCommandPalette: Boolean = false,
+    val showLiveDagDrawer: Boolean = false,
     val smartGuidesEnabled: Boolean = true,
     val compactTopBarMode: Boolean = false,
     val activeSmartGuides: List<SmartGuideLine> = emptyList(),
@@ -506,20 +509,29 @@ class GraphiteViewModel(
                 val targetKind = if (state.activeTool == ToolType.SPLINE) LayerGeometryKind.SPLINE else LayerGeometryKind.BEZIER_PATH
                 val currentLayer = state.selectedLayer
                 if (currentLayer != null && currentLayer.kind == targetKind && !currentLayer.locked) {
-                    val lastPt = currentLayer.points.lastOrNull()
-                    val tDx = if (lastPt != null) ((sx - lastPt.x) * 0.32f).coerceIn(-65f, 65f) else 42f
-                    val tDy = if (lastPt != null) ((sy - lastPt.y) * 0.32f).coerceIn(-65f, 65f) else -28f
-                    val newPt = Vec2Point(
-                        x = sx,
-                        y = sy,
-                        handleInX = sx - tDx,
-                        handleInY = sy - tDy,
-                        handleOutX = sx + tDx,
-                        handleOutY = sy + tDy
-                    )
-                    val updatedPts = currentLayer.points + newPt
-                    updateLayer(currentLayer.id, toast = "Vertice Bézier aggiunto (${updatedPts.size} nodi — trascina le maniglie tangenti)") {
-                        it.copy(points = updatedPts)
+                    val firstPt = currentLayer.points.firstOrNull()
+                    if (firstPt != null && currentLayer.points.size >= 3 && !currentLayer.closedPath &&
+                        hypot(sx - firstPt.x, sy - firstPt.y) <= 28f
+                    ) {
+                        updateLayer(currentLayer.id, toast = "Tracciato Bézier chiuso (Contorno Chiuso + Riempimento attivo)") {
+                            it.copy(closedPath = true, hasFill = true)
+                        }
+                    } else {
+                        val lastPt = currentLayer.points.lastOrNull()
+                        val tDx = if (lastPt != null) ((sx - lastPt.x) * 0.32f).coerceIn(-65f, 65f) else 42f
+                        val tDy = if (lastPt != null) ((sy - lastPt.y) * 0.32f).coerceIn(-65f, 65f) else -28f
+                        val newPt = Vec2Point(
+                            x = sx,
+                            y = sy,
+                            handleInX = sx - tDx,
+                            handleInY = sy - tDy,
+                            handleOutX = sx + tDx,
+                            handleOutY = sy + tDy
+                        )
+                        val updatedPts = currentLayer.points + newPt
+                        updateLayer(currentLayer.id, toast = "Vertice Bézier aggiunto (${updatedPts.size} nodi — tocca il 1° vertice per chiudere)") {
+                            it.copy(points = updatedPts)
+                        }
                     }
                 } else {
                     val newId = "layer-${UUID.randomUUID().toString().take(6)}"
@@ -611,6 +623,8 @@ class GraphiteViewModel(
             val snapThreshold = 12f
             val artCenterX = doc.artboardWidth / 2f
             val artCenterY = doc.artboardHeight / 2f
+            val selHalfW = selected.width / 2f
+            val selHalfH = selected.height / 2f
 
             if (abs(targetX - artCenterX) <= snapThreshold) {
                 targetX = artCenterX
@@ -623,13 +637,42 @@ class GraphiteViewModel(
 
             for (other in doc.layers) {
                 if (other.id == selected.id || !other.visible) continue
-                if (guides.none { it.isVertical } && abs(targetX - other.x) <= snapThreshold) {
-                    targetX = other.x
-                    guides.add(SmartGuideLine(isVertical = true, positionArtboard = other.x, label = "Allinea ${other.name}"))
+                val otherLeft = other.x - other.width / 2f
+                val otherRight = other.x + other.width / 2f
+                val otherTop = other.y - other.height / 2f
+                val otherBottom = other.y + other.height / 2f
+
+                if (guides.none { it.isVertical }) {
+                    when {
+                        abs(targetX - other.x) <= snapThreshold -> {
+                            targetX = other.x
+                            guides.add(SmartGuideLine(isVertical = true, positionArtboard = other.x, label = "Centro ${other.name}"))
+                        }
+                        abs((targetX - selHalfW) - otherLeft) <= snapThreshold -> {
+                            targetX = otherLeft + selHalfW
+                            guides.add(SmartGuideLine(isVertical = true, positionArtboard = otherLeft, label = "Bordo Sin. ${other.name}"))
+                        }
+                        abs((targetX + selHalfW) - otherRight) <= snapThreshold -> {
+                            targetX = otherRight - selHalfW
+                            guides.add(SmartGuideLine(isVertical = true, positionArtboard = otherRight, label = "Bordo Des. ${other.name}"))
+                        }
+                    }
                 }
-                if (guides.none { !it.isVertical } && abs(targetY - other.y) <= snapThreshold) {
-                    targetY = other.y
-                    guides.add(SmartGuideLine(isVertical = false, positionArtboard = other.y, label = "Allinea ${other.name}"))
+                if (guides.none { !it.isVertical }) {
+                    when {
+                        abs(targetY - other.y) <= snapThreshold -> {
+                            targetY = other.y
+                            guides.add(SmartGuideLine(isVertical = false, positionArtboard = other.y, label = "Centro ${other.name}"))
+                        }
+                        abs((targetY - selHalfH) - otherTop) <= snapThreshold -> {
+                            targetY = otherTop + selHalfH
+                            guides.add(SmartGuideLine(isVertical = false, positionArtboard = otherTop, label = "Bordo Sup. ${other.name}"))
+                        }
+                        abs((targetY + selHalfH) - otherBottom) <= snapThreshold -> {
+                            targetY = otherBottom - selHalfH
+                            guides.add(SmartGuideLine(isVertical = false, positionArtboard = otherBottom, label = "Bordo Inf. ${other.name}"))
+                        }
+                    }
                 }
             }
         }
@@ -814,7 +857,8 @@ class GraphiteViewModel(
     }
 
     /**
-     * Moves a Cubic Bézier tangent control handle (handleIn or handleOut) with C1 symmetric opposite reflection.
+     * Moves a Cubic Bézier tangent control handle (handleIn or handleOut) with C1 symmetric opposite reflection
+     * when `anchor.smooth` is true, or C0 independent cusp movement when `anchor.smooth` is false.
      */
     fun moveBezierHandle(
         pointIndex: Int,
@@ -833,8 +877,8 @@ class GraphiteViewModel(
             anchor.copy(
                 handleInX = newX,
                 handleInY = newY,
-                handleOutX = anchor.x - dx,
-                handleOutY = anchor.y - dy
+                handleOutX = if (anchor.smooth) anchor.x - dx else anchor.handleOutX,
+                handleOutY = if (anchor.smooth) anchor.y - dy else anchor.handleOutY
             )
         } else {
             val dx = newX - anchor.x
@@ -842,8 +886,8 @@ class GraphiteViewModel(
             anchor.copy(
                 handleOutX = newX,
                 handleOutY = newY,
-                handleInX = anchor.x - dx,
-                handleInY = anchor.y - dy
+                handleInX = if (anchor.smooth) anchor.x - dx else anchor.handleInX,
+                handleInY = if (anchor.smooth) anchor.y - dy else anchor.handleInY
             )
         }
         newPts[pointIndex] = updatedPt
@@ -855,8 +899,48 @@ class GraphiteViewModel(
         commitDocumentChange(
             newDoc = updatedDoc,
             recordHistory = isFinished,
-            toast = if (isFinished) "Tangente Bézier regolata" else null
+            toast = if (isFinished) {
+                if (anchor.smooth) "Tangente Bézier C¹ (Simmetrica) regolata" else "Tangente Cuspide C⁰ (Indipendente) regolata"
+            } else null
         )
+    }
+
+    fun toggleBezierClosedPath() {
+        val selected = _uiState.value.selectedLayer ?: return
+        val nextClosed = !selected.closedPath
+        updateLayer(
+            layerId = selected.id,
+            toast = if (nextClosed) "Tracciato Chiuso (Riempimento attivo)" else "Tracciato Aperto"
+        ) {
+            it.copy(
+                closedPath = nextClosed,
+                hasFill = if (nextClosed) true else it.hasFill
+            )
+        }
+    }
+
+    fun toggleBezierVerticesSmoothMode() {
+        val selected = _uiState.value.selectedLayer ?: return
+        if (selected.points.isEmpty()) return
+        val nextSmooth = !selected.points.first().smooth
+        updateLayer(
+            layerId = selected.id,
+            toast = if (nextSmooth) "Modalità Vertici: C¹ Morbidi Simmetrici" else "Modalità Vertici: C⁰ Cuspidi Indipendenti"
+        ) { layer ->
+            layer.copy(
+                points = layer.points.map { pt -> pt.copy(smooth = nextSmooth) }
+            )
+        }
+    }
+
+    fun toggleLiveDagDrawer() {
+        _uiState.update {
+            val next = !it.showLiveDagDrawer
+            it.copy(
+                showLiveDagDrawer = next,
+                statusToast = if (next) "Split-Workspace Attivo: Tela 2D + Mini-DAG Procedurale" else "Split-Workspace Chiuso"
+            )
+        }
     }
 
     fun createShapeFromDrag(startX: Float, startY: Float, endX: Float, endY: Float) {
@@ -905,13 +989,28 @@ class GraphiteViewModel(
 
     fun addFreehandOrBrushStroke(points: List<Vec2Point>, isBrush: Boolean) {
         if (points.size < 2) return
+        val smoothedPoints = if (points.size >= 4) {
+            points.mapIndexed { idx, pt ->
+                if (idx == 0 || idx == points.lastIndex) {
+                    pt
+                } else {
+                    val prev = points[idx - 1]
+                    val next = points[idx + 1]
+                    val sx = prev.x * 0.22f + pt.x * 0.56f + next.x * 0.22f
+                    val sy = prev.y * 0.22f + pt.y * 0.56f + next.y * 0.22f
+                    val sp = prev.pressure * 0.2f + pt.pressure * 0.6f + next.pressure * 0.2f
+                    pt.copy(x = sx, y = sy, handleInX = sx, handleInY = sy, handleOutX = sx, handleOutY = sy, pressure = sp)
+                }
+            }
+        } else points
+
         val state = _uiState.value
         val doc = state.document
-        val minX = points.minOf { it.x }
-        val maxX = points.maxOf { it.x }
-        val minY = points.minOf { it.y }
-        val maxY = points.maxOf { it.y }
-        val avgPressure = points.map { it.pressure }.average().toFloat().coerceIn(0.25f, 1.8f)
+        val minX = smoothedPoints.minOf { it.x }
+        val maxX = smoothedPoints.maxOf { it.x }
+        val minY = smoothedPoints.minOf { it.y }
+        val maxY = smoothedPoints.maxOf { it.y }
+        val avgPressure = smoothedPoints.map { it.pressure }.average().toFloat().coerceIn(0.25f, 1.8f)
         val newId = "stroke-${UUID.randomUUID().toString().take(6)}"
         val newLayer = GraphiteLayer(
             id = newId,
@@ -924,12 +1023,12 @@ class GraphiteViewModel(
             hasFill = false,
             strokeColorHex = state.primaryColorHex,
             strokeWidth = if (isBrush) max(10f, state.defaultStrokeWidth * 3.2f * avgPressure) else max(3f, state.defaultStrokeWidth * avgPressure),
-            points = points
+            points = smoothedPoints
         )
         commitDocumentChange(
             doc.copy(layers = doc.layers + newLayer),
             newSelectedLayerId = newId,
-            toast = "${newLayer.name} aggiunto (pressione media ${(avgPressure * 100).roundToInt()}%)"
+            toast = "${newLayer.name} aggiunto (Stabilizzato • pressione ${(avgPressure * 100).roundToInt()}%)"
         )
     }
 
@@ -1082,6 +1181,88 @@ class GraphiteViewModel(
         val item = mutable.removeAt(idx)
         mutable.add(targetIdx, item)
         commitDocumentChange(doc.copy(layers = mutable))
+    }
+
+    /**
+     * Phase 3 (TP-B3): Quick Artboard Alignment & Multi-Layer Distribution with full point/handle shifting.
+     */
+    fun alignSelectedLayer(alignment: ArtboardAlignment) {
+        val doc = _uiState.value.document
+        if (alignment == ArtboardAlignment.DISTRIBUTE_H || alignment == ArtboardAlignment.DISTRIBUTE_V) {
+            val unlocked = doc.layers.filter { it.visible && !it.locked }
+            if (unlocked.size < 2) {
+                showToast("Servono almeno 2 livelli sbloccati per la distribuzione")
+                return
+            }
+            val isHoriz = alignment == ArtboardAlignment.DISTRIBUTE_H
+            val sorted = if (isHoriz) unlocked.sortedBy { it.x } else unlocked.sortedBy { it.y }
+            val minPos = if (isHoriz) sorted.first().x else sorted.first().y
+            val maxPos = if (isHoriz) sorted.last().x else sorted.last().y
+            val span = max(120f, maxPos - minPos)
+            val step = span / (sorted.size - 1).coerceAtLeast(1)
+            val targetMap = sorted.mapIndexed { idx, l ->
+                l.id to (minPos + idx * step)
+            }.toMap()
+
+            val updatedLayers = doc.layers.map { l ->
+                val targetCoord = targetMap[l.id] ?: return@map l
+                val dx = if (isHoriz) targetCoord - l.x else 0f
+                val dy = if (!isHoriz) targetCoord - l.y else 0f
+                val shiftedPts = l.points.map { pt ->
+                    pt.copy(
+                        x = pt.x + dx,
+                        y = pt.y + dy,
+                        handleInX = pt.handleInX + dx,
+                        handleInY = pt.handleInY + dy,
+                        handleOutX = pt.handleOutX + dx,
+                        handleOutY = pt.handleOutY + dy
+                    )
+                }
+                l.copy(x = l.x + dx, y = l.y + dy, points = shiftedPts)
+            }
+            commitDocumentChange(
+                doc.copy(layers = updatedLayers),
+                recordHistory = true,
+                toast = "${alignment.labelIt} (${unlocked.size} livelli)"
+            )
+            return
+        }
+
+        val selected = _uiState.value.selectedLayer ?: return
+        if (selected.locked) return
+        val halfW = selected.width / 2f
+        val halfH = selected.height / 2f
+        val targetX = when (alignment) {
+            ArtboardAlignment.ALIGN_LEFT -> halfW
+            ArtboardAlignment.ALIGN_CENTER_H -> doc.artboardWidth / 2f
+            ArtboardAlignment.ALIGN_RIGHT -> doc.artboardWidth - halfW
+            else -> selected.x
+        }
+        val targetY = when (alignment) {
+            ArtboardAlignment.ALIGN_TOP -> halfH
+            ArtboardAlignment.ALIGN_CENTER_V -> doc.artboardHeight / 2f
+            ArtboardAlignment.ALIGN_BOTTOM -> doc.artboardHeight - halfH
+            else -> selected.y
+        }
+        val dx = targetX - selected.x
+        val dy = targetY - selected.y
+        val shiftedPts = selected.points.map { pt ->
+            pt.copy(
+                x = pt.x + dx,
+                y = pt.y + dy,
+                handleInX = pt.handleInX + dx,
+                handleInY = pt.handleInY + dy,
+                handleOutX = pt.handleOutX + dx,
+                handleOutY = pt.handleOutY + dy
+            )
+        }
+        updateLayer(
+            layerId = selected.id,
+            recordHistory = true,
+            toast = "${selected.name}: ${alignment.labelIt}"
+        ) { l ->
+            l.copy(x = targetX, y = targetY, points = shiftedPts)
+        }
     }
 
     // Procedural Node Graph Operations
@@ -1282,6 +1463,29 @@ class GraphiteViewModel(
                     graphY = 220f
                 )
             )
+            "sticker_outline" -> listOf(
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.OFFSET_PATH,
+                    params = mapOf("offset" to 22f, "roundness" to 18f),
+                    graphX = 280f,
+                    graphY = 130f
+                ),
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.STROKE_DASH,
+                    params = mapOf("dashLen" to 24f, "gapLen" to 10f, "phase" to 0f),
+                    graphX = 540f,
+                    graphY = 210f
+                ),
+                ProceduralNode(
+                    id = "node-${UUID.randomUUID().toString().take(5)}",
+                    type = ProceduralNodeType.DROP_SHADOW,
+                    params = mapOf("offsetX" to 8f, "offsetY" to 12f, "spread" to 16f, "alpha" to 0.7f),
+                    graphX = 800f,
+                    graphY = 140f
+                )
+            )
             else -> listOf(
                 ProceduralNode(
                     id = "node-${UUID.randomUUID().toString().take(5)}",
@@ -1357,6 +1561,11 @@ class GraphiteViewModel(
     }
 
     fun importGraphiteJsonDocument(jsonContent: String) {
+        val trimmed = jsonContent.trim()
+        if (trimmed.startsWith("<svg", ignoreCase = true) || trimmed.startsWith("<?xml", ignoreCase = true)) {
+            importSvgDocument(trimmed, mergeIntoCurrent = false)
+            return
+        }
         val parsed = ProceduralEngine.fromGraphiteJson(jsonContent)
         if (parsed == null) {
             showToast("File .graphite non valido o corrotto")
@@ -1376,6 +1585,70 @@ class GraphiteViewModel(
         )
         _uiState.update {
             it.copy(activeTab = MobileWorkspaceTab.CANVAS, zoom = 1f, panX = 0f, panY = 0f)
+        }
+    }
+
+    /**
+     * Phase 3 (TP-A3 & TP-C3): Bidirectional SVG 1.1 Vector & Cubic Bézier Importer.
+     */
+    fun importSvgDocument(svgContent: String, mergeIntoCurrent: Boolean = false) {
+        val currentDoc = _uiState.value.document
+        val parsed = ProceduralEngine.importFromSvg(svgContent, currentDoc)
+        if (parsed == null || parsed.layers.isEmpty()) {
+            showToast("Codice SVG non valido o privo di forme vettoriali supportate")
+            return
+        }
+        if (mergeIntoCurrent) {
+            val reindexedLayers = parsed.layers.mapIndexed { idx, l ->
+                l.copy(id = "svg-${UUID.randomUUID().toString().take(6)}-$idx")
+            }
+            val mergedDoc = currentDoc.copy(
+                layers = currentDoc.layers + reindexedLayers,
+                updatedAt = System.currentTimeMillis()
+            )
+            commitDocumentChange(
+                newDoc = mergedDoc,
+                recordHistory = true,
+                newSelectedLayerId = reindexedLayers.last().id,
+                toast = "${reindexedLayers.size} livelli vettoriali SVG importati nella tavola attiva"
+            )
+        } else {
+            val importedDoc = parsed.copy(
+                id = "svg-doc-${UUID.randomUUID().toString().take(6)}",
+                name = "Progetto SVG Importato",
+                updatedAt = System.currentTimeMillis()
+            )
+            commitDocumentChange(
+                newDoc = importedDoc,
+                recordHistory = true,
+                newSelectedLayerId = importedDoc.layers.last().id,
+                toast = "Documento SVG importato (${importedDoc.layers.size} livelli vettoriali)"
+            )
+        }
+        _uiState.update {
+            it.copy(activeTab = MobileWorkspaceTab.CANVAS, showExportDialog = false)
+        }
+    }
+
+    /**
+     * Phase 3 (TP-A3): Live SVG 1.1 Round-Trip verification on the active document.
+     */
+    fun roundTripCurrentDocumentViaSvg() {
+        val currentDoc = _uiState.value.document
+        val exportedSvg = ProceduralEngine.exportToSvg(currentDoc)
+        val reimported = ProceduralEngine.importFromSvg(exportedSvg, currentDoc)
+        if (reimported != null && reimported.layers.isNotEmpty()) {
+            val roundTripDoc = reimported.copy(
+                id = currentDoc.id,
+                name = currentDoc.name,
+                updatedAt = System.currentTimeMillis()
+            )
+            commitDocumentChange(
+                newDoc = roundTripDoc,
+                recordHistory = true,
+                newSelectedLayerId = roundTripDoc.layers.last().id,
+                toast = "Round-Trip SVG 1.1 verificato (${roundTripDoc.layers.size} livelli ricostruiti)"
+            )
         }
     }
 
@@ -1443,9 +1716,44 @@ class GraphiteViewModel(
         )
     }
 
-    // Department A/B Testing & Executive Command Center
+    // Department A/B Testing & Executive Command Center + Universal Command Palette (Phase 5 TP-D5)
     fun setABLabSheetVisible(visible: Boolean) {
         _uiState.update { it.copy(showABLabSheet = visible) }
+    }
+
+    fun setCommandPaletteVisible(visible: Boolean) {
+        _uiState.update { it.copy(showCommandPalette = visible) }
+    }
+
+    fun executeEnterpriseCommand(commandId: String) {
+        _uiState.update { it.copy(showCommandPalette = false) }
+        when (commandId) {
+            "cmd_align_center" -> {
+                alignSelectedLayer(ArtboardAlignment.ALIGN_CENTER_H)
+                alignSelectedLayer(ArtboardAlignment.ALIGN_CENTER_V)
+            }
+            "cmd_distribute_h" -> {
+                alignSelectedLayer(ArtboardAlignment.DISTRIBUTE_H)
+            }
+            "cmd_macro_mandala" -> {
+                applyProceduralPresetRecipe("mandala")
+            }
+            "cmd_macro_boolean_gear" -> {
+                applyProceduralPresetRecipe("boolean_gear")
+            }
+            "cmd_macro_sticker_outline" -> {
+                applyProceduralPresetRecipe("sticker_outline")
+            }
+            "cmd_toggle_perf_120hz" -> {
+                togglePerformanceHud()
+            }
+            "cmd_export_handoff" -> {
+                setExportDialogVisible(true)
+            }
+            "cmd_rollout_ab" -> {
+                applyWinningABRollout()
+            }
+        }
     }
 
     fun setABExperimentVariant(experimentId: String, variant: ABVariantChoice) {

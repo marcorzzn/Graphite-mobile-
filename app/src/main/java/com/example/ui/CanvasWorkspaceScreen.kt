@@ -162,9 +162,10 @@ fun CanvasWorkspaceScreen(
     var activeGizmoHandle by remember { mutableStateOf<GizmoHandleType?>(null) }
     var currentStylusPressure by remember { mutableFloatStateOf(1.0f) }
 
-    // Real-time Performance Telemetry metrics & Procedural Animation Clock
+    // Real-time Performance Telemetry metrics & Procedural Animation Clock (Phase 4 TP-A4)
     var lastEvalTimeMs by remember { mutableFloatStateOf(0.8f) }
     var totalEvaluatedInstances by remember { mutableIntStateOf(0) }
+    var culledInstancesCount by remember { mutableIntStateOf(0) }
     var animTimeSec by remember { mutableFloatStateOf(0f) }
     var draggingSplitCurtain by remember { mutableStateOf(false) }
 
@@ -516,6 +517,11 @@ fun CanvasWorkspaceScreen(
 
             val t0 = System.nanoTime()
             var instanceCounter = 0
+            var culledCounter = 0
+            val viewMinArtX = (-originX) / max(0.05f, totalScale)
+            val viewMinArtY = (-originY) / max(0.05f, totalScale)
+            val viewMaxArtX = (size.width - originX) / max(0.05f, totalScale)
+            val viewMaxArtY = (size.height - originY) / max(0.05f, totalScale)
 
             withTransform({
                 translate(left = originX, top = originY)
@@ -638,8 +644,16 @@ fun CanvasWorkspaceScreen(
                             timeSec = currentAnimSec,
                             bypassNodes = false
                         )
-                        instanceCounter += evaluatedInstances.size
-                        for (inst in evaluatedInstances) {
+                        val (visibleInstances, culled) = ProceduralEngine.cullInstancesForViewport(
+                            instances = evaluatedInstances,
+                            minArtX = viewMinArtX,
+                            minArtY = viewMinArtY,
+                            maxArtX = viewMaxArtX,
+                            maxArtY = viewMaxArtY
+                        )
+                        instanceCounter += visibleInstances.size
+                        culledCounter += culled
+                        for (inst in visibleInstances) {
                             drawEvaluatedInstance(
                                 inst = inst,
                                 wireframeOnly = uiState.wireframeOverlay,
@@ -754,7 +768,7 @@ fun CanvasWorkspaceScreen(
                             )
                         }
 
-                        // Path / Cubic Bézier / Spline Anchor Handles & C1 Tangent Antennae
+                        // Path / Cubic Bézier / Spline Anchor Handles & C1/C0 Tangent Antennae
                         if (sel.points.isNotEmpty()) {
                             for (i in 0 until sel.points.size - 1) {
                                 val p0 = sel.points[i]
@@ -767,35 +781,47 @@ fun CanvasWorkspaceScreen(
                                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f / totalScale, 6f / totalScale))
                                 )
                             }
+                            if (sel.closedPath && sel.points.size >= 3) {
+                                val pLast = sel.points.last()
+                                val pFirst = sel.points.first()
+                                drawLine(
+                                    color = DataGraphic.copy(alpha = 0.55f),
+                                    start = Offset(pLast.x, pLast.y),
+                                    end = Offset(pFirst.x, pFirst.y),
+                                    strokeWidth = 1.4f / totalScale,
+                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f / totalScale, 6f / totalScale))
+                                )
+                            }
                             sel.points.forEachIndexed { idx, pt ->
                                 // Draw Cubic Bézier Tangent Antennae (handleIn & handleOut) when BEZIER_PATH
                                 if (sel.kind == LayerGeometryKind.BEZIER_PATH) {
                                     val tR = 6.5f / totalScale
                                     val isDraggingIn = draggingBezierHandle == (idx to true)
                                     val isDraggingOut = draggingBezierHandle == (idx to false)
+                                    val handleCol = if (pt.smooth) DataGraphic else DataRaster
 
                                     if (hypot(pt.handleInX - pt.x, pt.handleInY - pt.y) > 1f) {
                                         drawLine(
-                                            color = DataGraphic.copy(alpha = 0.85f),
+                                            color = handleCol.copy(alpha = 0.85f),
                                             start = Offset(pt.x, pt.y),
                                             end = Offset(pt.handleInX, pt.handleInY),
                                             strokeWidth = 1.8f / totalScale
                                         )
                                         drawCircle(
-                                            color = if (isDraggingIn) DataRaster else DataGraphic,
+                                            color = if (isDraggingIn) DataRaster else handleCol,
                                             radius = if (isDraggingIn) tR * 1.35f else tR,
                                             center = Offset(pt.handleInX, pt.handleInY)
                                         )
                                     }
                                     if (hypot(pt.handleOutX - pt.x, pt.handleOutY - pt.y) > 1f) {
                                         drawLine(
-                                            color = DataGraphic.copy(alpha = 0.85f),
+                                            color = handleCol.copy(alpha = 0.85f),
                                             start = Offset(pt.x, pt.y),
                                             end = Offset(pt.handleOutX, pt.handleOutY),
                                             strokeWidth = 1.8f / totalScale
                                         )
                                         drawCircle(
-                                            color = if (isDraggingOut) DataRaster else DataGraphic,
+                                            color = if (isDraggingOut) DataRaster else handleCol,
                                             radius = if (isDraggingOut) tR * 1.35f else tR,
                                             center = Offset(pt.handleOutX, pt.handleOutY)
                                         )
@@ -805,7 +831,7 @@ fun CanvasWorkspaceScreen(
                                 val isDragged = idx == draggingVertexIndex
                                 val r = (if (isDragged) 11f else 8f) / totalScale
                                 drawCircle(
-                                    color = if (isDragged) DataRaster else DataVector,
+                                    color = if (isDragged) DataRaster else if (pt.smooth) DataVector else DataRaster,
                                     radius = r,
                                     center = Offset(pt.x, pt.y)
                                 )
@@ -893,30 +919,72 @@ fun CanvasWorkspaceScreen(
             val elapsedMs = ((System.nanoTime() - t0) / 1_000_000.0).toFloat()
             lastEvalTimeMs = (lastEvalTimeMs * 0.7f + elapsedMs * 0.3f).coerceAtLeast(0.1f)
             totalEvaluatedInstances = instanceCounter
+            culledInstancesCount = culledCounter
 
-            // Optional Top & Left Rulers (Graphite RulerInput style)
+            // Phase 4 (TP-B4 — Gruppo B): Precision Calibrated Top (X) & Left (Y) Rulers + Selected Layer Projection Markers
             if (uiState.showRulers) {
                 val rulerThick = 18.dp.toPx()
+                // Top X Ruler background
                 drawRect(
-                    color = GraphitePanelBg.copy(alpha = 0.9f),
+                    color = GraphitePanelBg.copy(alpha = 0.92f),
                     topLeft = Offset(0f, 0f),
                     size = Size(size.width, rulerThick)
                 )
-                var rx = 0f
+                // Left Y Ruler background
+                drawRect(
+                    color = GraphitePanelBg.copy(alpha = 0.92f),
+                    topLeft = Offset(0f, rulerThick),
+                    size = Size(rulerThick, size.height - rulerThick)
+                )
+                // Selected layer projection highlight on X and Y rulers
+                selectedLayer?.let { sel ->
+                    if (sel.visible) {
+                        val projLeft = (originX + (sel.x - sel.width / 2f) * totalScale).coerceIn(rulerThick, size.width)
+                        val projRight = (originX + (sel.x + sel.width / 2f) * totalScale).coerceIn(rulerThick, size.width)
+                        if (projRight > projLeft) {
+                            drawRect(
+                                color = DataVector.copy(alpha = 0.32f),
+                                topLeft = Offset(projLeft, 0f),
+                                size = Size(projRight - projLeft, rulerThick)
+                            )
+                        }
+                        val projTop = (originY + (sel.y - sel.height / 2f) * totalScale).coerceIn(rulerThick, size.height)
+                        val projBottom = (originY + (sel.y + sel.height / 2f) * totalScale).coerceIn(rulerThick, size.height)
+                        if (projBottom > projTop) {
+                            drawRect(
+                                color = DataVector.copy(alpha = 0.32f),
+                                topLeft = Offset(0f, projTop),
+                                size = Size(rulerThick, projBottom - projTop)
+                            )
+                        }
+                    }
+                }
+                var rx = rulerThick
                 while (rx < size.width) {
                     val isMajor = (rx.toInt() % 100) < 20
                     drawLine(
-                        color = GraphiteLightGray.copy(alpha = if (isMajor) 0.5f else 0.25f),
+                        color = GraphiteLightGray.copy(alpha = if (isMajor) 0.55f else 0.25f),
                         start = Offset(rx, if (isMajor) 4f else 10f),
                         end = Offset(rx, rulerThick),
                         strokeWidth = 1f
                     )
                     rx += 20f
                 }
+                var ry = rulerThick
+                while (ry < size.height) {
+                    val isMajor = (ry.toInt() % 100) < 20
+                    drawLine(
+                        color = GraphiteLightGray.copy(alpha = if (isMajor) 0.55f else 0.25f),
+                        start = Offset(if (isMajor) 4f else 10f, ry),
+                        end = Offset(rulerThick, ry),
+                        strokeWidth = 1f
+                    )
+                    ry += 20f
+                }
             }
         }
 
-        // 2. Top Floating Context Pill Bar (Document, Undo/Redo, Zoom, Snap, Grid, Perf HUD, Export)
+        // 2. Top Floating Context Pill Bar (Document, Undo/Redo, Zoom, Snap, Grid, Perf HUD, Command Palette, Export)
         TopCanvasControlPill(
             uiState = uiState,
             viewModel = viewModel,
@@ -925,7 +993,7 @@ fun CanvasWorkspaceScreen(
                 .padding(top = 12.dp, start = 10.dp, end = 10.dp)
         )
 
-        // 3. Real-Time Graphene Performance & Telemetry HUD Overlay
+        // 3. Real-Time Graphene Performance & Telemetry HUD Overlay (Phase 4 TP-A4)
         AnimatedVisibility(
             visible = uiState.showPerformanceHud,
             enter = fadeIn(),
@@ -937,6 +1005,8 @@ fun CanvasWorkspaceScreen(
             PerformanceTelemetryHudCard(
                 evalTimeMs = lastEvalTimeMs,
                 instanceCount = totalEvaluatedInstances,
+                culledCount = culledInstancesCount,
+                cacheHitPercent = ProceduralEngine.getCacheHitRatePercent(),
                 layerCount = doc.layers.size,
                 nodeCount = doc.layers.sumOf { it.nodes.count { n -> n.enabled } },
                 stylusPressure = currentStylusPressure,
@@ -1035,6 +1105,13 @@ fun CanvasWorkspaceScreen(
                 }
             }
 
+            if (uiState.showLiveDagDrawer && selectedLayer != null) {
+                LiveDagOverlayDrawer(
+                    layer = selectedLayer,
+                    viewModel = viewModel
+                )
+            }
+
             QuickLayerAndColorsBar(
                 uiState = uiState,
                 viewModel = viewModel
@@ -1054,6 +1131,14 @@ fun CanvasWorkspaceScreen(
                 onDismiss = { viewModel.setABLabSheetVisible(false) }
             )
         }
+
+        // 8. Phase 5 (TP-D5 — Gruppo D): Universal Enterprise Command Palette Modal
+        if (uiState.showCommandPalette) {
+            EnterpriseCommandPaletteDialog(
+                onDismiss = { viewModel.setCommandPaletteVisible(false) },
+                onExecuteCommand = { cmdId -> viewModel.executeEnterpriseCommand(cmdId) }
+            )
+        }
     }
 }
 
@@ -1061,6 +1146,8 @@ fun CanvasWorkspaceScreen(
 private fun PerformanceTelemetryHudCard(
     evalTimeMs: Float,
     instanceCount: Int,
+    culledCount: Int,
+    cacheHitPercent: Int,
     layerCount: Int,
     nodeCount: Int,
     stylusPressure: Float,
@@ -1090,7 +1177,7 @@ private fun PerformanceTelemetryHudCard(
                         .background(if (evalTimeMs < 8.3f) DataGraphic else DataRaster)
                 )
                 Text(
-                    text = "GRAPHENE DAG TELEMETRY (120Hz Target)",
+                    text = "GRAPHENE ULTRA-ENGINE TELEMETRY (120Hz • v3.0)",
                     style = MaterialTheme.typography.labelSmall,
                     color = DataGraphic
                 )
@@ -1104,11 +1191,11 @@ private fun PerformanceTelemetryHudCard(
             Text(
                 text = String.format(
                     Locale.US,
-                    "DAG Eval: %.2f ms/frame • Istanze: %d • Nodi: %d • Livelli: %d",
+                    "DAG Eval: %.2f ms/frame • Visibili: %d • Scartate Frustum: %d • Cache Hit: %d%%",
                     evalTimeMs,
                     instanceCount,
-                    nodeCount,
-                    layerCount
+                    culledCount,
+                    cacheHitPercent
                 ),
                 style = MaterialTheme.typography.labelMedium,
                 color = GraphiteNearWhite
@@ -1118,7 +1205,7 @@ private fun PerformanceTelemetryHudCard(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "Pressione Stilo/Touch: ${(stylusPressure * 100).roundToInt()}% • Multi-Touch 2/3 Dita Attivo",
+                    text = "Livelli: $layerCount • Nodi: $nodeCount • Pressione Stilo: ${(stylusPressure * 100).roundToInt()}%",
                     style = MaterialTheme.typography.labelSmall,
                     color = DataArtboard
                 )
@@ -1352,6 +1439,25 @@ private fun TopCanvasControlPill(
                 )
             }
 
+            // Phase 5 (TP-D5): Universal Enterprise Command Palette Button
+            Surface(
+                color = DataRaster.copy(alpha = 0.20f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .padding(horizontal = 2.dp)
+                    .border(1.dp, DataRaster, RoundedCornerShape(8.dp))
+                    .clickable { viewModel.setCommandPaletteVisible(true) }
+                    .testTag("command_palette_button")
+            ) {
+                Text(
+                    text = "⚡ Comandi",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = DataRaster,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+
             // Executive A/B Testing & Department Command Center Badge
             Surface(
                 color = if (uiState.abRolloutApplied) DataGraphic.copy(alpha = 0.24f) else DataVector.copy(alpha = 0.20f),
@@ -1375,7 +1481,7 @@ private fun TopCanvasControlPill(
                 )
             }
 
-            // Export SVG / PNG / Graphite Button
+            // Export SVG / PNG / XML / Compose / Tokens Button
             IconButton(
                 onClick = { viewModel.setExportDialogVisible(true) },
                 modifier = Modifier
@@ -1387,6 +1493,135 @@ private fun TopCanvasControlPill(
                     contentDescription = "Esporta",
                     tint = DataRaster
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EnterpriseCommandPaletteDialog(
+    onDismiss: () -> Unit,
+    onExecuteCommand: (String) -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    val filtered = remember(searchQuery) {
+        val q = searchQuery.trim().lowercase(Locale.ROOT)
+        if (q.isEmpty()) com.example.model.ENTERPRISE_COMMAND_CATALOG
+        else com.example.model.ENTERPRISE_COMMAND_CATALOG.filter {
+            it.titleIt.lowercase(Locale.ROOT).contains(q) ||
+                it.subtitleIt.lowercase(Locale.ROOT).contains(q) ||
+                it.divisionBadge.lowercase(Locale.ROOT).contains(q)
+        }
+    }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = GraphitePanelBg,
+            shape = RoundedCornerShape(18.dp),
+            tonalElevation = 12.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, DataRaster.copy(alpha = 0.8f), RoundedCornerShape(18.dp))
+                .testTag("enterprise_command_palette_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "GRUPPO D • ENTERPRISE COMMAND PALETTE",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DataRaster,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Accesso Rapido Azioni, Macro & Handoff",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = GraphiteNearWhite
+                        )
+                    }
+                    Text(
+                        text = "✕",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = GraphiteLightGray,
+                        modifier = Modifier
+                            .clickable { onDismiss() }
+                            .padding(6.dp)
+                    )
+                }
+
+                androidx.compose.material3.OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text("Cerca comando, macro o divisione (es. Mandala, Centra, XML)...") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("command_palette_search_input")
+                )
+
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    for (cmd in filtered.take(6)) {
+                        Surface(
+                            color = GraphiteDarkGray,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, GraphiteDimGray, RoundedCornerShape(10.dp))
+                                .clickable { onExecuteCommand(cmd.id) }
+                                .testTag("command_item_${cmd.id}")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = cmd.divisionBadge,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = DataGraphic
+                                    )
+                                    Text(
+                                        text = cmd.titleIt,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = GraphiteNearWhite,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = cmd.subtitleIt,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = GraphiteLightGray,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Surface(
+                                    color = GraphiteNearBlack,
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = cmd.shortcutHint,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = DataVector,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1421,13 +1656,13 @@ private fun ABExperimentLabDialog(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "DIREZIONE DIPARTIMENTI • A/B TESTING LAB",
+                            text = "DIREZIONE 5 DIVISIONI ENTERPRISE • A/B LAB",
                             style = MaterialTheme.typography.labelSmall,
                             color = DataGraphic,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Telemetria & Decisioni Esecutive",
+                            text = "Telemetria & Decisioni Esecutive v3.0",
                             style = MaterialTheme.typography.titleMedium,
                             color = GraphiteNearWhite
                         )
@@ -1442,7 +1677,7 @@ private fun ABExperimentLabDialog(
                     )
                 }
 
-                // Live Telemetry Summary Banner across Departments
+                // Live Telemetry Summary Banner across 5 Enterprise Divisions
                 Surface(
                     color = GraphiteNearBlack,
                     shape = RoundedCornerShape(10.dp),
@@ -1453,12 +1688,18 @@ private fun ABExperimentLabDialog(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "Telemetria Live Sessione & Coorti Sperimentali:",
+                            text = "ROADMAP ENTERPRISE: Fasi 1-3 ✓ • Fase 4 v2.5 Ultra-Engine ✓ • Fase 5 v2.8 UX ✓ • Fase 6 v3.0 Handoff ✓",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DataGraphic,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Divisioni Attive: Gruppo A (120Hz) • Gruppo B (CAD) • Gruppo C (DAG) • Gruppo D (UX) • Gruppo E (Dev Handoff)",
                             style = MaterialTheme.typography.labelSmall,
                             color = DataVector
                         )
                         Text(
-                            text = "Undo Gesture 2Dita: ${uiState.gestureUndoCount} vs Toolbar: ${uiState.buttonUndoCount} • Snap Laser: ${uiState.smartGuideSnapsCount} • Ricablaggi 2D DAG: ${uiState.dagSpatialRewiresCount}",
+                            text = "Undo Gesture: ${uiState.gestureUndoCount} • Snap Laser Bordi/Centri: ${uiState.smartGuideSnapsCount} • Ricablaggi 2D DAG: ${uiState.dagSpatialRewiresCount}",
                             style = MaterialTheme.typography.labelSmall,
                             color = GraphiteNearWhite
                         )
@@ -1705,6 +1946,67 @@ private fun QuickLayerAndColorsBar(
                         )
                     )
 
+                    if (selectedLayer.kind == LayerGeometryKind.BEZIER_PATH || selectedLayer.kind == LayerGeometryKind.SPLINE) {
+                        AssistChip(
+                            onClick = { viewModel.toggleBezierClosedPath() },
+                            label = {
+                                Text(
+                                    text = if (selectedLayer.closedPath) "Tracciato Chiuso" else "Chiudi Tracciato",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (selectedLayer.closedPath) DataGraphic else GraphiteNearWhite
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = GraphiteDarkGray,
+                                labelColor = GraphiteNearWhite
+                            ),
+                            modifier = Modifier.testTag("toggle_close_path_chip")
+                        )
+
+                        if (selectedLayer.kind == LayerGeometryKind.BEZIER_PATH) {
+                            val allSmooth = selectedLayer.points.all { it.smooth }
+                            AssistChip(
+                                onClick = { viewModel.toggleBezierVerticesSmoothMode() },
+                                label = {
+                                    Text(
+                                        text = if (allSmooth) "Vertici C¹" else "Cuspidi C⁰",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (allSmooth) DataVector else DataRaster
+                                    )
+                                },
+                                colors = AssistChipDefaults.assistChipColors(
+                                    containerColor = GraphiteDarkGray,
+                                    labelColor = GraphiteNearWhite
+                                ),
+                                modifier = Modifier.testTag("toggle_cusp_mode_chip")
+                            )
+                        }
+                    }
+
+                    AssistChip(
+                        onClick = { viewModel.toggleLiveDagDrawer() },
+                        label = {
+                            Text(
+                                text = "Split DAG",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = if (uiState.showLiveDagDrawer) DataGraphic else DataVector
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.AccountTree,
+                                contentDescription = null,
+                                tint = if (uiState.showLiveDagDrawer) DataGraphic else DataVector,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = GraphiteDarkGray,
+                            labelColor = GraphiteNearWhite
+                        ),
+                        modifier = Modifier.testTag("live_dag_split_button")
+                    )
+
                     AssistChip(
                         onClick = { viewModel.setNodeCatalogVisible(true) },
                         label = {
@@ -1716,7 +2018,7 @@ private fun QuickLayerAndColorsBar(
                         },
                         leadingIcon = {
                             Icon(
-                                imageVector = Icons.Default.AccountTree,
+                                imageVector = Icons.Default.Add,
                                 contentDescription = null,
                                 tint = DataGraphic,
                                 modifier = Modifier.size(16.dp)
@@ -1727,6 +2029,29 @@ private fun QuickLayerAndColorsBar(
                             labelColor = DataGraphic
                         ),
                         modifier = Modifier.testTag("quick_add_node_chip")
+                    )
+
+                    AssistChip(
+                        onClick = {
+                            viewModel.alignSelectedLayer(com.example.model.ArtboardAlignment.ALIGN_CENTER_H)
+                            viewModel.alignSelectedLayer(com.example.model.ArtboardAlignment.ALIGN_CENTER_V)
+                        },
+                        label = { Text("🎯 Centra", style = MaterialTheme.typography.labelLarge) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = GraphiteDarkGray,
+                            labelColor = DataVector
+                        ),
+                        modifier = Modifier.testTag("hud_quick_center_chip")
+                    )
+
+                    AssistChip(
+                        onClick = { viewModel.duplicateLayer(selectedLayer.id) },
+                        label = { Text("⧉ Duplica", style = MaterialTheme.typography.labelLarge) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = GraphiteDarkGray,
+                            labelColor = DataGraphic
+                        ),
+                        modifier = Modifier.testTag("hud_quick_duplicate_chip")
                     )
 
                     AssistChip(
@@ -1746,6 +2071,146 @@ private fun QuickLayerAndColorsBar(
                         ),
                         modifier = Modifier.testTag("quick_add_layer_chip")
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveDagOverlayDrawer(
+    layer: com.example.model.GraphiteLayer,
+    viewModel: GraphiteViewModel
+) {
+    Surface(
+        color = GraphiteNearBlack.copy(alpha = 0.94f),
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 8.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, DataVector.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
+            .testTag("live_dag_overlay_drawer")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "SPLIT-WORKSPACE DAG LIVE • ${layer.name} (${layer.nodes.size} nodi)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DataGraphic,
+                    fontWeight = FontWeight.Bold
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "+ Nodo",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = DataVector,
+                        modifier = Modifier.clickable { viewModel.setNodeCatalogVisible(true) }
+                    )
+                    Text(
+                        text = "Chiudi ✕",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = GraphiteLightGray,
+                        modifier = Modifier.clickable { viewModel.toggleLiveDagDrawer() }
+                    )
+                }
+            }
+
+            if (layer.nodes.isEmpty()) {
+                Text(
+                    text = "Nessun nodo procedurale attivo su questo livello. Tocca '+ Nodo' per comporre il grafo.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = GraphiteLightGray
+                )
+            } else {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp)
+                ) {
+                    items(layer.nodes, key = { it.id }) { node ->
+                        val firstSpec = node.type.paramSpecs.firstOrNull()
+                        val currentVal = if (firstSpec != null) {
+                            node.params[firstSpec.key] ?: firstSpec.defaultVal
+                        } else 0f
+
+                        Surface(
+                            color = GraphiteDarkGray,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .width(205.dp)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (node.enabled) DataGraphic.copy(alpha = 0.6f) else GraphiteDimGray,
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = node.type.titleIt,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (node.enabled) GraphiteNearWhite else GraphiteLightGray,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = if (node.enabled) "ON" else "OFF",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (node.enabled) DataGraphic else GraphiteLightGray,
+                                        modifier = Modifier.clickable {
+                                            viewModel.toggleNodeEnabled(layer.id, node.id)
+                                        }
+                                    )
+                                }
+                                if (firstSpec != null) {
+                                    Text(
+                                        text = "${firstSpec.labelIt}: ${currentVal.roundToInt()}${firstSpec.unit}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = DataNumber
+                                    )
+                                    Slider(
+                                        value = currentVal.coerceIn(firstSpec.min, firstSpec.max),
+                                        onValueChange = { v ->
+                                            viewModel.updateNodeParam(
+                                                layerId = layer.id,
+                                                nodeId = node.id,
+                                                paramKey = firstSpec.key,
+                                                newValue = v,
+                                                recordHistory = false
+                                            )
+                                        },
+                                        onValueChangeFinished = {
+                                            viewModel.updateNodeParam(
+                                                layerId = layer.id,
+                                                nodeId = node.id,
+                                                paramKey = firstSpec.key,
+                                                newValue = currentVal,
+                                                recordHistory = true
+                                            )
+                                        },
+                                        valueRange = firstSpec.min..firstSpec.max,
+                                        modifier = Modifier.height(24.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1863,11 +2328,9 @@ private fun DrawScope.drawEvaluatedInstance(
         // Fill
         val isOpenStrokeKind = inst.kind in listOf(
             LayerGeometryKind.LINE,
-            LayerGeometryKind.BEZIER_PATH,
             LayerGeometryKind.FREEHAND,
-            LayerGeometryKind.SPLINE,
             LayerGeometryKind.BRUSH_STROKE
-        )
+        ) || ((inst.kind == LayerGeometryKind.BEZIER_PATH || inst.kind == LayerGeometryKind.SPLINE) && !inst.closedPath)
 
         if (!wireframeOnly && inst.hasFill && !isOpenStrokeKind) {
             if (inst.kind == LayerGeometryKind.TEXT) {
@@ -2014,6 +2477,19 @@ private fun buildComposePath(inst: EvaluatedShapeInstance): Path {
                         curr.y
                     )
                 }
+                if (inst.closedPath && inst.points.size >= 3) {
+                    val last = inst.points.last()
+                    val first = inst.points.first()
+                    path.cubicTo(
+                        last.handleOutX,
+                        last.handleOutY,
+                        first.handleInX,
+                        first.handleInY,
+                        first.x,
+                        first.y
+                    )
+                    path.close()
+                }
             } else {
                 path.moveTo(inst.centerX - inst.width / 2f, inst.centerY)
                 path.lineTo(inst.centerX + inst.width / 2f, inst.centerY)
@@ -2035,6 +2511,9 @@ private fun buildComposePath(inst: EvaluatedShapeInstance): Path {
                 }
                 if (inst.kind == LayerGeometryKind.SPLINE) {
                     path.lineTo(inst.points.last().x, inst.points.last().y)
+                    if (inst.closedPath && inst.points.size >= 3) {
+                        path.close()
+                    }
                 }
             } else {
                 path.moveTo(inst.centerX - inst.width / 2f, inst.centerY)
@@ -2052,7 +2531,7 @@ private fun buildComposePath(inst: EvaluatedShapeInstance): Path {
             LayerGeometryKind.ELLIPSE,
             LayerGeometryKind.POLYGON,
             LayerGeometryKind.STAR
-        )
+        ) || (inst.kind == LayerGeometryKind.BEZIER_PATH && inst.closedPath)
         if (isClosedShape) {
             val cutterPath = Path()
             val cx = inst.centerX + boolOp.offsetX
