@@ -113,12 +113,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.engine.EvaluatedShapeInstance
 import com.example.engine.ProceduralEngine
+import com.example.model.ABVariantChoice
 import com.example.model.GraphiteLayer
 import com.example.model.LayerGeometryKind
 import com.example.model.ToolType
 import com.example.model.Vec2Point
 import com.example.ui.theme.DataArtboard
 import com.example.ui.theme.DataGraphic
+import com.example.ui.theme.DataNumber
 import com.example.ui.theme.DataRaster
 import com.example.ui.theme.DataVector
 import com.example.ui.theme.GraphiteDarkGray
@@ -856,6 +858,29 @@ fun CanvasWorkspaceScreen(
                     }
                 }
 
+                // Dynamic Magnetic Smart Guides (Laser Alignment Lines from EXP-02)
+                if (uiState.activeSmartGuides.isNotEmpty()) {
+                    for (guide in uiState.activeSmartGuides) {
+                        if (guide.isVertical) {
+                            drawLine(
+                                color = Color(0xFFFF4081),
+                                start = Offset(guide.positionArtboard, 0f),
+                                end = Offset(guide.positionArtboard, doc.artboardHeight.toFloat()),
+                                strokeWidth = 2.2f / totalScale,
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f / totalScale, 6f / totalScale))
+                            )
+                        } else {
+                            drawLine(
+                                color = Color(0xFFFF4081),
+                                start = Offset(0f, guide.positionArtboard),
+                                end = Offset(doc.artboardWidth.toFloat(), guide.positionArtboard),
+                                strokeWidth = 2.2f / totalScale,
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f / totalScale, 6f / totalScale))
+                            )
+                        }
+                    }
+                }
+
                 // Artboard border outline
                 drawRect(
                     color = GraphiteDimGray,
@@ -1018,6 +1043,15 @@ fun CanvasWorkspaceScreen(
             MobileToolDock(
                 activeTool = uiState.activeTool,
                 onSelectTool = { viewModel.selectTool(it) }
+            )
+        }
+
+        // 7. Executive A/B Testing & Department Command Center Lab Modal
+        if (uiState.showABLabSheet) {
+            ABExperimentLabDialog(
+                uiState = uiState,
+                viewModel = viewModel,
+                onDismiss = { viewModel.setABLabSheetVisible(false) }
             )
         }
     }
@@ -1218,18 +1252,20 @@ private fun TopCanvasControlPill(
                 }
             }
 
-            // Zoom - / + quick buttons
-            IconButton(
-                onClick = { viewModel.updateViewport(uiState.zoom * 0.8f, uiState.panX, uiState.panY) },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Text("-", fontWeight = FontWeight.Bold, color = GraphiteNearWhite)
-            }
-            IconButton(
-                onClick = { viewModel.updateViewport(uiState.zoom * 1.25f, uiState.panX, uiState.panY) },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Text("+", fontWeight = FontWeight.Bold, color = GraphiteNearWhite)
+            if (!uiState.compactTopBarMode) {
+                // Zoom - / + quick buttons (hidden in Variant B Compact One-Hand mode to reduce mis-taps)
+                IconButton(
+                    onClick = { viewModel.updateViewport(uiState.zoom * 0.8f, uiState.panX, uiState.panY) },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Text("-", fontWeight = FontWeight.Bold, color = GraphiteNearWhite)
+                }
+                IconButton(
+                    onClick = { viewModel.updateViewport(uiState.zoom * 1.25f, uiState.panX, uiState.panY) },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Text("+", fontWeight = FontWeight.Bold, color = GraphiteNearWhite)
+                }
             }
 
             // Snap Toggle
@@ -1316,6 +1352,29 @@ private fun TopCanvasControlPill(
                 )
             }
 
+            // Executive A/B Testing & Department Command Center Badge
+            Surface(
+                color = if (uiState.abRolloutApplied) DataGraphic.copy(alpha = 0.24f) else DataVector.copy(alpha = 0.20f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .padding(horizontal = 2.dp)
+                    .border(
+                        width = 1.dp,
+                        color = if (uiState.abRolloutApplied) DataGraphic else DataVector,
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    .clickable { viewModel.setABLabSheetVisible(true) }
+                    .testTag("ab_lab_button")
+            ) {
+                Text(
+                    text = if (uiState.abRolloutApplied) "A/B ✓" else "A/B Lab",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = if (uiState.abRolloutApplied) DataGraphic else DataVector,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+
             // Export SVG / PNG / Graphite Button
             IconButton(
                 onClick = { viewModel.setExportDialogVisible(true) },
@@ -1328,6 +1387,220 @@ private fun TopCanvasControlPill(
                     contentDescription = "Esporta",
                     tint = DataRaster
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ABExperimentLabDialog(
+    uiState: EditorUiState,
+    viewModel: GraphiteViewModel,
+    onDismiss: () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = GraphitePanelBg,
+            shape = RoundedCornerShape(18.dp),
+            tonalElevation = 12.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, DataVector.copy(alpha = 0.7f), RoundedCornerShape(18.dp))
+                .testTag("ab_experiment_lab_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "DIREZIONE DIPARTIMENTI • A/B TESTING LAB",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DataGraphic,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Telemetria & Decisioni Esecutive",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = GraphiteNearWhite
+                        )
+                    }
+                    Text(
+                        text = "✕",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = GraphiteLightGray,
+                        modifier = Modifier
+                            .clickable { onDismiss() }
+                            .padding(6.dp)
+                    )
+                }
+
+                // Live Telemetry Summary Banner across Departments
+                Surface(
+                    color = GraphiteNearBlack,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Telemetria Live Sessione & Coorti Sperimentali:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DataVector
+                        )
+                        Text(
+                            text = "Undo Gesture 2Dita: ${uiState.gestureUndoCount} vs Toolbar: ${uiState.buttonUndoCount} • Snap Laser: ${uiState.smartGuideSnapsCount} • Ricablaggi 2D DAG: ${uiState.dagSpatialRewiresCount}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = GraphiteNearWhite
+                        )
+                    }
+                }
+
+                // 4 Department Experiments List
+                for (exp in uiState.abExperiments) {
+                    Surface(
+                        color = GraphiteDarkGray.copy(alpha = 0.75f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = exp.departmentIt,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = DataNumber
+                                )
+                                Text(
+                                    text = "N=${exp.sampleSize} • Conf. ${exp.confidencePercent}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = DataGraphic
+                                )
+                            }
+                            Text(
+                                text = exp.titleIt,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = GraphiteNearWhite,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Risultato: ${exp.metricDeltaIt}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = GraphiteLightGray
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                val isA = exp.activeVariant == ABVariantChoice.VARIANT_A
+                                Surface(
+                                    color = if (isA) DataVector.copy(alpha = 0.28f) else GraphiteNearBlack,
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .border(
+                                            1.dp,
+                                            if (isA) DataVector else GraphiteDimGray,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .clickable {
+                                            viewModel.setABExperimentVariant(exp.id, ABVariantChoice.VARIANT_A)
+                                        }
+                                ) {
+                                    Text(
+                                        text = exp.variantALabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isA) GraphiteNearWhite else GraphiteLightGray,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                    )
+                                }
+                                Surface(
+                                    color = if (!isA) DataGraphic.copy(alpha = 0.28f) else GraphiteNearBlack,
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .border(
+                                            1.dp,
+                                            if (!isA) DataGraphic else GraphiteDimGray,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .clickable {
+                                            viewModel.setABExperimentVariant(exp.id, ABVariantChoice.VARIANT_B)
+                                        }
+                                ) {
+                                    Text(
+                                        text = "${exp.variantBLabel} ★",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (!isA) DataGraphic else GraphiteLightGray,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Executive Actions: Simulate Cohort + Rollout 100% Winners
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Surface(
+                        color = GraphiteDarkGray,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .border(1.dp, DataVector, RoundedCornerShape(10.dp))
+                            .clickable { viewModel.runDepartmentABSimulation() }
+                            .testTag("simulate_ab_sessions_button")
+                    ) {
+                        Text(
+                            text = "Simula +1.200 Sessioni",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = DataVector,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp)
+                        )
+                    }
+                    Surface(
+                        color = DataGraphic,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .clickable {
+                                viewModel.applyWinningABRollout()
+                                onDismiss()
+                            }
+                            .testTag("apply_ab_winners_button")
+                    ) {
+                        Text(
+                            text = "Rollout 100% Vincenti",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = GraphiteNearBlack,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp)
+                        )
+                    }
+                }
             }
         }
     }

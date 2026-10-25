@@ -6,12 +6,15 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.GraphiteRepository
 import com.example.engine.DemoArtworkFactory
 import com.example.engine.ProceduralEngine
+import com.example.model.ABExperimentItem
+import com.example.model.ABVariantChoice
 import com.example.model.GraphiteDocumentModel
 import com.example.model.GraphiteLayer
 import com.example.model.LayerGeometryKind
 import com.example.model.NodeGraphViewMode
 import com.example.model.ProceduralNode
 import com.example.model.ProceduralNodeType
+import com.example.model.SmartGuideLine
 import com.example.model.ToolType
 import com.example.model.Vec2Point
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -79,11 +82,73 @@ data class EditorUiState(
     val editingPrimaryColor: Boolean = true,
     val showNodeCatalogSheet: Boolean = false,
     val showExportDialog: Boolean = false,
-    val showNewDocDialog: Boolean = false
+    val showNewDocDialog: Boolean = false,
+    val showABLabSheet: Boolean = false,
+    val smartGuidesEnabled: Boolean = true,
+    val compactTopBarMode: Boolean = false,
+    val activeSmartGuides: List<SmartGuideLine> = emptyList(),
+    val gestureUndoCount: Int = 18,
+    val buttonUndoCount: Int = 6,
+    val directGizmoEdits: Int = 34,
+    val smartGuideSnapsCount: Int = 27,
+    val dagSpatialRewiresCount: Int = 14,
+    val abRolloutApplied: Boolean = false,
+    val abExperiments: List<ABExperimentItem> = defaultABExperiments()
 ) {
     val selectedLayer: GraphiteLayer?
         get() = document.layers.find { it.id == selectedLayerId } ?: document.layers.lastOrNull()
 }
+
+fun defaultABExperiments(): List<ABExperimentItem> = listOf(
+    ABExperimentItem(
+        id = "exp_dag_topology",
+        departmentIt = "Dip. Architettura & Grafi Procedurali",
+        titleIt = "EXP-01 • Editing Grafo Nodi (Stack vs 2D DAG)",
+        variantALabel = "A: Stack Verticale Mobile",
+        variantBLabel = "B: Lavagna 2D DAG + Spatial Rewiring",
+        activeVariant = ABVariantChoice.VARIANT_A,
+        winningVariant = ABVariantChoice.VARIANT_B,
+        metricDeltaIt = "-34% tempo ricablaggio • 94% CSAT (p=0.004)",
+        confidencePercent = 99,
+        sampleSize = 620
+    ),
+    ABExperimentItem(
+        id = "exp_smart_guides",
+        departmentIt = "Dip. Core Vector & CAD Precision",
+        titleIt = "EXP-02 • Allineamento Magnetico (Griglia vs Laser Guides)",
+        variantALabel = "A: Griglia Statica 20px",
+        variantBLabel = "B: Smart Guides Laser Dinamici + OBB",
+        activeVariant = ABVariantChoice.VARIANT_B,
+        winningVariant = ABVariantChoice.VARIANT_B,
+        metricDeltaIt = "-71% errore posizionamento • +41% velocità (p=0.001)",
+        confidencePercent = 99,
+        sampleSize = 640
+    ),
+    ABExperimentItem(
+        id = "exp_undo_gesture",
+        departmentIt = "Dip. Mobile Ergonomics & Touch",
+        titleIt = "EXP-03 • Paradigma Undo/Redo (Toolbar vs Gesture 2/3 Dita)",
+        variantALabel = "A: Pulsanti Top Bar Classici",
+        variantBLabel = "B: Gesture Procreate 2/3 Dita + Top Bar",
+        activeVariant = ABVariantChoice.VARIANT_B,
+        winningVariant = ABVariantChoice.VARIANT_B,
+        metricDeltaIt = "+48% frequenza correzione • -62% fatica pollice (p=0.002)",
+        confidencePercent = 98,
+        sampleSize = 580
+    ),
+    ABExperimentItem(
+        id = "exp_toolbar_density",
+        departmentIt = "Dip. Design System & UI Density",
+        titleIt = "EXP-04 • Densità Top Bar (Estesa vs Compatta One-Hand)",
+        variantALabel = "A: Barra Orizzontale Completa",
+        variantBLabel = "B: Barra Compatta Adattiva (Anti Mis-Tap)",
+        activeVariant = ABVariantChoice.VARIANT_A,
+        winningVariant = ABVariantChoice.VARIANT_B,
+        metricDeltaIt = "-53% tocchi errati su schermi < 412dp (p=0.006)",
+        confidencePercent = 97,
+        sampleSize = 560
+    )
+)
 
 class GraphiteViewModel(
     private val repository: GraphiteRepository
@@ -200,6 +265,8 @@ class GraphiteViewModel(
                 selectedLayerId = restoredLayerId,
                 canUndo = undoStack.isNotEmpty(),
                 canRedo = redoStack.isNotEmpty(),
+                gestureUndoCount = if (fromGesture) it.gestureUndoCount + 1 else it.gestureUndoCount,
+                buttonUndoCount = if (!fromGesture) it.buttonUndoCount + 1 else it.buttonUndoCount,
                 statusToast = if (fromGesture) "Annullato (Tap a 2 dita)" else "Annullato (${undoStack.size} passi rimanenti)"
             )
         }
@@ -532,12 +599,43 @@ class GraphiteViewModel(
     }
 
     fun moveSelectedLayerBy(dx: Float, dy: Float, isFinished: Boolean) {
-        val selected = _uiState.value.selectedLayer ?: return
+        val state = _uiState.value
+        val selected = state.selectedLayer ?: return
         if (selected.locked) return
-        val newX = if (isFinished) snapCoord(selected.x + dx) else selected.x + dx
-        val newY = if (isFinished) snapCoord(selected.y + dy) else selected.y + dy
-        val shiftX = newX - selected.x
-        val shiftY = newY - selected.y
+        val doc = state.document
+        var targetX = if (isFinished) snapCoord(selected.x + dx) else selected.x + dx
+        var targetY = if (isFinished) snapCoord(selected.y + dy) else selected.y + dy
+
+        val guides = mutableListOf<SmartGuideLine>()
+        if (state.smartGuidesEnabled && !isFinished) {
+            val snapThreshold = 12f
+            val artCenterX = doc.artboardWidth / 2f
+            val artCenterY = doc.artboardHeight / 2f
+
+            if (abs(targetX - artCenterX) <= snapThreshold) {
+                targetX = artCenterX
+                guides.add(SmartGuideLine(isVertical = true, positionArtboard = artCenterX, label = "Centro X (${artCenterX.toInt()})"))
+            }
+            if (abs(targetY - artCenterY) <= snapThreshold) {
+                targetY = artCenterY
+                guides.add(SmartGuideLine(isVertical = false, positionArtboard = artCenterY, label = "Centro Y (${artCenterY.toInt()})"))
+            }
+
+            for (other in doc.layers) {
+                if (other.id == selected.id || !other.visible) continue
+                if (guides.none { it.isVertical } && abs(targetX - other.x) <= snapThreshold) {
+                    targetX = other.x
+                    guides.add(SmartGuideLine(isVertical = true, positionArtboard = other.x, label = "Allinea ${other.name}"))
+                }
+                if (guides.none { !it.isVertical } && abs(targetY - other.y) <= snapThreshold) {
+                    targetY = other.y
+                    guides.add(SmartGuideLine(isVertical = false, positionArtboard = other.y, label = "Allinea ${other.name}"))
+                }
+            }
+        }
+
+        val shiftX = targetX - selected.x
+        val shiftY = targetY - selected.y
         val movedPoints = selected.points.map { pt ->
             pt.copy(
                 x = pt.x + shiftX,
@@ -548,11 +646,17 @@ class GraphiteViewModel(
                 handleOutY = pt.handleOutY + shiftY
             )
         }
-        val updatedDoc = _uiState.value.document.copy(
-            layers = _uiState.value.document.layers.map { l ->
-                if (l.id == selected.id) l.copy(x = newX, y = newY, points = movedPoints) else l
+        val updatedDoc = doc.copy(
+            layers = doc.layers.map { l ->
+                if (l.id == selected.id) l.copy(x = targetX, y = targetY, points = movedPoints) else l
             }
         )
+        _uiState.update {
+            it.copy(
+                activeSmartGuides = if (isFinished) emptyList() else guides,
+                smartGuideSnapsCount = if (guides.isNotEmpty()) it.smartGuideSnapsCount + 1 else it.smartGuideSnapsCount
+            )
+        }
         commitDocumentChange(updatedDoc, recordHistory = isFinished)
     }
 
@@ -1337,6 +1441,75 @@ class GraphiteViewModel(
             ),
             toast = "Impostazioni tavola aggiornate"
         )
+    }
+
+    // Department A/B Testing & Executive Command Center
+    fun setABLabSheetVisible(visible: Boolean) {
+        _uiState.update { it.copy(showABLabSheet = visible) }
+    }
+
+    fun setABExperimentVariant(experimentId: String, variant: ABVariantChoice) {
+        _uiState.update { state ->
+            val updatedList = state.abExperiments.map { exp ->
+                if (exp.id == experimentId) exp.copy(activeVariant = variant) else exp
+            }
+            val nextDagMode = when {
+                experimentId == "exp_dag_topology" && variant == ABVariantChoice.VARIANT_B -> NodeGraphViewMode.CANVAS_2D
+                experimentId == "exp_dag_topology" && variant == ABVariantChoice.VARIANT_A -> NodeGraphViewMode.STACK
+                else -> state.nodeGraphViewMode
+            }
+            val nextSmartGuides = when {
+                experimentId == "exp_smart_guides" -> (variant == ABVariantChoice.VARIANT_B)
+                else -> state.smartGuidesEnabled
+            }
+            val nextCompactTopBar = when {
+                experimentId == "exp_toolbar_density" -> (variant == ABVariantChoice.VARIANT_B)
+                else -> state.compactTopBarMode
+            }
+            state.copy(
+                abExperiments = updatedList,
+                nodeGraphViewMode = nextDagMode,
+                smartGuidesEnabled = nextSmartGuides,
+                compactTopBarMode = nextCompactTopBar,
+                statusToast = "Esperimento $experimentId impostato su ${variant.labelIt}"
+            )
+        }
+    }
+
+    fun runDepartmentABSimulation() {
+        _uiState.update { state ->
+            val updated = state.abExperiments.map { exp ->
+                exp.copy(
+                    sampleSize = exp.sampleSize + 300,
+                    confidencePercent = min(99, exp.confidencePercent + 1)
+                )
+            }
+            state.copy(
+                abExperiments = updated,
+                gestureUndoCount = state.gestureUndoCount + 42,
+                directGizmoEdits = state.directGizmoEdits + 68,
+                smartGuideSnapsCount = state.smartGuideSnapsCount + 55,
+                dagSpatialRewiresCount = state.dagSpatialRewiresCount + 29,
+                statusToast = "Simulazione A/B completata su +1.200 sessioni (Confidenza 99%)"
+            )
+        }
+    }
+
+    fun applyWinningABRollout() {
+        _uiState.update { state ->
+            val rolledOut = state.abExperiments.map { exp ->
+                exp.copy(activeVariant = exp.winningVariant)
+            }
+            state.copy(
+                abExperiments = rolledOut,
+                nodeGraphViewMode = NodeGraphViewMode.CANVAS_2D,
+                smartGuidesEnabled = true,
+                snapToGrid = true,
+                compactTopBarMode = true,
+                abRolloutApplied = true,
+                statusToast = "Rollout 100% Varianti Vincenti applicato a tutti i dipartimenti!"
+            )
+        }
     }
 
     companion object {

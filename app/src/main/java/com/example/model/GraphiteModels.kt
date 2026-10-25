@@ -387,3 +387,28 @@ val OFFICIAL_DEMO_ARTWORKS = listOf(
         nodeCountBadge = "12 Nodi"
     )
 )
+
+enum class ABVariantChoice(val code: String, val labelIt: String) {
+    VARIANT_A("A", "Variante A (Controllo)"),
+    VARIANT_B("B", "Variante B (Innovazione)")
+}
+
+data class ABExperimentItem(
+    val id: String,
+    val departmentIt: String,
+    val titleIt: String,
+    val variantALabel: String,
+    val variantBLabel: String,
+    val activeVariant: ABVariantChoice,
+    val winningVariant: ABVariantChoice,
+    val metricDeltaIt: String,
+    val confidencePercent: Int,
+    val sampleSize: Int
+)
+
+data class SmartGuideLine(
+    val isVertical: Boolean,
+    val positionArtboard: Float,
+    val label: String
+)
+

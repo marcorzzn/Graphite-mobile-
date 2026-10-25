@@ -127,6 +127,29 @@ class ExampleRobolectricTest {
         val bezierSvg = ProceduralEngine.exportToSvg(vm.uiState.value.document)
         assertTrue(bezierSvg.contains(" C "))
 
+        // Test Dynamic Magnetic Smart Guides during layer drag near Artboard center
+        val curSel = vm.uiState.value.selectedLayer!!
+        val artCenterX = vm.uiState.value.document.artboardWidth / 2f
+        val artCenterY = vm.uiState.value.document.artboardHeight / 2f
+        vm.moveSelectedLayerBy(
+            dx = (artCenterX - curSel.x) + 4f,
+            dy = (artCenterY - curSel.y) - 3f,
+            isFinished = false
+        )
+        assertTrue(vm.uiState.value.activeSmartGuides.isNotEmpty())
+        assertEquals(artCenterX, vm.uiState.value.selectedLayer!!.x, 0.5f)
+        vm.moveSelectedLayerBy(0f, 0f, isFinished = true)
+        assertTrue(vm.uiState.value.activeSmartGuides.isEmpty())
+
+        // Test Executive A/B Testing Lab Simulation & 100% Winning Variant Rollout
+        val initialSamples = vm.uiState.value.abExperiments.first().sampleSize
+        vm.runDepartmentABSimulation()
+        assertTrue(vm.uiState.value.abExperiments.first().sampleSize > initialSamples)
+        vm.applyWinningABRollout()
+        assertTrue(vm.uiState.value.abRolloutApplied)
+        assertTrue(vm.uiState.value.compactTopBarMode)
+        assertEquals(com.example.model.NodeGraphViewMode.CANVAS_2D, vm.uiState.value.nodeGraphViewMode)
+
         // Render document with Boolean Path.op and Cubic Bézier to Bitmap
         val gearBmp = ProceduralEngine.renderToBitmap(vm.uiState.value.document, targetSide = 128)
         assertEquals(128, gearBmp.width)
